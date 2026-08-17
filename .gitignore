@@ -1,12 +1,22 @@
+o
+
+
+
+
+
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
 *$py.class
 
 # C extensions
+O
+
+
 *.so
 
-# Distribution / packaging
+XXXxxX# Distribution / packaging
 .Python
 build/
 develop-eggs/

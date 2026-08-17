@@ -1,0 +1,101 @@
+{
+  "input": {
+    "file": "C:\\Users\\visha\\OneDrive\\Desktop\\laptop_comparison_rag\\ver2\\data\\raw\\tablets.csv",
+    "rows": 840,
+    "columns": 83
+  },
+  "output": {
+    "rows": 820,
+    "rag_documents": 820
+  },
+  "conflicts": {
+    "ram_storage_conflicts": 121
+  },
+  "numeric_anomalies": {
+    "count": 5
+  },
+  "duplicates": {
+    "duplicate_urls": 120,
+    "duplicate_product_names": 512,
+    "duplicate_brand_model": 121,
+    "unique_canonical_products": 738,
+    "unique_variants": 817
+  },
+  "ratings": {
+    "distribution_sum_min": 0.0,
+    "distribution_sum_max": 102.0,
+    "zero_distribution_rows": 395,
+    "valid_distribution_rows": 425
+  },
+  "missingness": {
+    "Product Name": 513,
+    "Price in India": 513,
+    "Total Ratings": 480,
+    "Launched": 3,
+    "Front camera": 1,
+    "Screen size (inches)": 1,
+    "Touchscreen": 3,
+    "Rear camera": 5,
+    "Wi-Fi": 11,
+    "Internal storage": 15,
+    "Bluetooth": 19,
+    "Resolution": 20,
+    "Operating system": 22,
+    "Expandable storage": 21,
+    "Accelerometer": 37,
+    "Processor": 46,
+    "GPS": 57,
+    "Ambient light sensor": 63,
+    "Gyroscope": 76,
+    "Removable battery": 90,
+    "RAM": 94,
+    "Compass/ Magnetometer": 104,
+    "Proximity sensor": 106,
+    "Barometer": 127,
+    "Wi-Fi Direct": 128,
+    "FM": 131,
+    "USB OTG": 132,
+    "Headphones": 135,
+    "NFC": 143,
+    "Temperature sensor": 146,
+    "Infrared": 149,
+    "Mobile High-Definition Link (MHL)": 150,
+    "Expandable storage type": 191,
+    "Processor make": 234,
+    "Wi-Fi standards supported": 240,
+    "Weight (g)": 254,
+    "Dimensions (mm)": 265,
+    "Battery capacity (mAh)": 257,
+    "Expandable storage up to (GB)": 287,
+    "Bluetooth version": 336,
+    "Colours": 356,
+    "Number of SIMs": 406,
+    "Rear Flash": 451,
+    "3G": 407,
+    "4G/ LTE": 414,
+    "Supports 4G in India (Band 40)": 413,
+    "Pixels per inch (PPI)": 538,
+    "GSM/CDMA": 456,
+    "SIM Type": 491,
+    "Form factor": 682,
+    "Sim 2 3G": 709,
+    "price_inr": 513,
+    "total_ratings": 506,
+    "number_of_sims": 406,
+    "expandable_storage_up_to_gb": 287,
+    "ram_gb": 94,
+    "internal_storage_gb": 12,
+    "thickness_mm": 797,
+    "usb_type_c": 785
+  },
+  "output_files": {
+    "csv": "C:\\Users\\visha\\OneDrive\\Desktop\\laptop_comparison_rag\\ver2\\data\\processed\\tablets_rag_ready.csv",
+    "json": "C:\\Users\\visha\\OneDrive\\Desktop\\laptop_comparison_rag\\ver2\\data\\processed\\tablet_rag_corpus.json",
+    "quality_report": "C:\\Users\\visha\\OneDrive\\Desktop\\laptop_comparison_rag\\ver2\\data\\processed\\tablet_data_quality_report.json",
+    "conflicts": "C:\\Users\\visha\\OneDrive\\Desktop\\laptop_comparison_rag\\ver2\\data\\processed\\tablet_specification_conflicts.csv",
+    "anomalies": "C:\\Users\\visha\\OneDrive\\Desktop\\laptop_comparison_rag\\ver2\\data\\processed\\tablet_numeric_anomalies.csv",
+    "duplicates": "C:\\Users\\visha\\OneDrive\\Desktop\\laptop_comparison_rag\\ver2\\data\\processed\\tablet_duplicate_analysis.csv",
+    "removed": "C:\\Users\\visha\\OneDrive\\Desktop\\laptop_comparison_rag\\ver2\\data\\processed\\tablet_removed_rows.csv"
+  },
+  "rag_status": "READY_FOR_RAG_VALIDATION"
+}

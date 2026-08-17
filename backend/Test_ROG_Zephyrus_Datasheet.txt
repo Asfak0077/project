@@ -1,0 +1,13 @@
+ASUS ROG Zephyrus G GA502 Gaming Laptop Manual
+
+Processor and Performance:
+Powered by AMD Ryzen 7 3750H Quad-Core Processor with clock speeds up to 4.0GHz. Coupled with NVIDIA GeForce GTX 1660 Ti Max-Q graphics with 6GB GDDR6 VRAM.
+
+Memory and Storage:
+Comes standard with 16GB DDR4 2400MHz dual-channel RAM, expandable up to 32GB. Fast 512GB M.2 NVMe PCIe SSD storage.
+
+Battery and Charging:
+Equipped with a 76Wh 4-cell lithium-ion battery providing up to 8.8 hours of mixed web browsing and video playback. Includes 180W fast charging power adapter.
+
+Thermal and Cooling Architecture:
+Features intelligent dual-fan cooling system with self-cleaning anti-dust tunnels and 33% thinner fan blades for 17% higher airflow under full gaming load.

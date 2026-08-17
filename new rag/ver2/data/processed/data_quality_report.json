@@ -1,0 +1,45 @@
+{
+  "input": {
+    "file": "C:\\Users\\visha\\OneDrive\\Desktop\\laptop_comparison_rag\\ver2\\data\\processed\\cleaned_mobiles.csv",
+    "rows": 5583,
+    "columns": 35
+  },
+  "output": {
+    "rows": 5583,
+    "columns": 46
+  },
+  "rows_removed": 0,
+  "ram_storage_corrections": 1856,
+  "numeric_anomalies": 376,
+  "duplicate_statistics": {
+    "duplicate_product_ids": 0,
+    "duplicate_canonical_products": 3012,
+    "unique_canonical_products": 2571,
+    "unique_variants": 2585
+  },
+  "rating_distribution": {
+    "mean_sum": 96.42,
+    "invalid_distribution_rows": 204
+  },
+  "unknown_values": {
+    "processor": 119,
+    "processor_make": 1237,
+    "resolution": 248,
+    "rear_camera": 3,
+    "front_camera": 12,
+    "operating_system": 20,
+    "wifi": 48,
+    "bluetooth": 66,
+    "dimensions": 1013,
+    "colour": 773
+  },
+  "status": "READY_FOR_RAG_INDEXING",
+  "output_files": {
+    "clean_csv": "C:\\Users\\visha\\OneDrive\\Desktop\\laptop_comparison_rag\\ver2\\data\\processed\\mobiles_rag_ready.csv",
+    "rag_json": "C:\\Users\\visha\\OneDrive\\Desktop\\laptop_comparison_rag\\ver2\\data\\processed\\mobile_rag_corpus.json",
+    "quality_report": "C:\\Users\\visha\\OneDrive\\Desktop\\laptop_comparison_rag\\ver2\\data\\processed\\data_quality_report.json",
+    "conflict_report": "C:\\Users\\visha\\OneDrive\\Desktop\\laptop_comparison_rag\\ver2\\data\\processed\\specification_conflicts.csv",
+    "anomaly_report": "C:\\Users\\visha\\OneDrive\\Desktop\\laptop_comparison_rag\\ver2\\data\\processed\\numeric_anomalies.csv",
+    "removed_rows": "C:\\Users\\visha\\OneDrive\\Desktop\\laptop_comparison_rag\\ver2\\data\\processed\\removed_rows.csv"
+  }
+}

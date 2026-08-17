@@ -1,0 +1,6 @@
+﻿row_index,url,field,value,issue,action
+650,https://gadgets.ndtv.com/datawind-ubislate-7c-1518,internal_storage_gb,0.25,outside_expected_range,flagged_not_imputed
+695,https://gadgets.ndtv.com/samsung-galaxy-tab-s7-plus-price-in-india-96367,expandable_storage_up_to_gb,1000000.0,outside_expected_range,flagged_not_imputed
+696,https://gadgets.ndtv.com/samsung-galaxy-tab-s7-plus-lte-price-in-india-96376,expandable_storage_up_to_gb,1000000.0,outside_expected_range,flagged_not_imputed
+706,https://gadgets.ndtv.com/samsung-galaxy-tab-s7-lte-price-in-india-96375,expandable_storage_up_to_gb,1000000.0,outside_expected_range,flagged_not_imputed
+707,https://gadgets.ndtv.com/samsung-galaxy-tab-s7-price-in-india-96365,expandable_storage_up_to_gb,1000000.0,outside_expected_range,flagged_not_imputed

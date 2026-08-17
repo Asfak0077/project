@@ -1,0 +1,10 @@
+{
+  "venvPath": ".",
+  "venv": ".venv",
+  "extraPaths": [
+    "backend",
+    "CTS Hackathon",
+    "backend/venv/lib/python3.14/site-packages"
+  ]
+}
+

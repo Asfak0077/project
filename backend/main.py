@@ -24,6 +24,8 @@ from routes import (
     admin_router,
     dashboard_router,
     session_router,
+    notifications_router,
+    battle_router,
 )
 
 # Configure logging
@@ -209,6 +211,9 @@ app.include_router(feedback_router, prefix="/api")
 app.include_router(admin_router, prefix="/api")
 app.include_router(dashboard_router, prefix="/api")
 app.include_router(session_router, prefix="/api")
+app.include_router(notifications_router, prefix="/api")
+app.include_router(notifications_router)  # Exposes /ws/notifications
+app.include_router(battle_router, prefix="/api")
 
 @app.get("/")
 def root():

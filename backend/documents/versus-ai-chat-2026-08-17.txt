@@ -1,0 +1,29 @@
+[ASSISTANT] 1:57:01 PM:
+Hello! I've loaded verified specifications for **2 active products** (including **Msi MSI Titan Pro GT73VR-7RF Laptop (Windows 10, 32GB RAM, 1120GB HDD, Intel Core i7, Black, 17.3 inch)**). You can ask me specific questions like **'ram'**, **'price'**, **'processor'**, or request a full comparison.
+
+-------------------
+
+[USER] 1:57:04 PM:
+Which has better battery life under load?
+
+-------------------
+
+[ASSISTANT] 1:57:05 PM:
+### 🔋 Battery Life & Power Consumption Under Load
+
+Battery endurance under sustained computational or gaming load depends on the CPU TDP (Thermal Design Power), display brightness, and whether a dedicated GPU is active:
+
+• **Msi Titan Pro GT73VR-7RF Laptop (Windows 10, 32GB RAM, 1120GB HDD, Intel Core i7, Black, 17.3 inch)**
+  - Processor: `Intel Core i7 7th Gen` | Graphics: `Integrated Graphics`
+  - Battery Configuration: `3-Cell Lithium-Ion`
+  - Estimated Runtime: **3.0 to 5.0 hours under mixed workload / 6.0 to 8.0 hours light browsing**
+
+• **Dell Alienware 15 A569952SIN9 Laptop (Windows 10, 16GB RAM, 1000GB HDD, Intel Core i7, Black, 15.6 inch)**
+  - Processor: `Intel Core i7 7th Gen 7700HQ` | Graphics: `Nvidia GeForce GTX 1070`
+  - Battery Configuration: `4`
+  - Estimated Runtime: **2.0 to 4.0 hours under heavy 3D load (GPU active) / 5.0 to 7.0 hours light browsing**
+
+
+**💡 Battery Optimization Advice:**
+• Switch to Integrated Graphics (iGPU) when performing office work or coding to double battery runtime.
+• Reduce screen brightness to 50-60% while on battery power.

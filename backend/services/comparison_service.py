@@ -51,10 +51,26 @@ class ComparisonService:
             for p in products
         ]
 
+        def _format_ram(p: Dict[str, Any]) -> str:
+            raw_ram = p.get("ram_gb") if p.get("ram_gb") is not None else p.get("ram")
+            if raw_ram is None or str(raw_ram).strip() in ["", "0", "nan", "NaN"]:
+                return "8GB RAM"
+            r_str = str(raw_ram).upper().replace("GB", "").replace("RAM", "").strip()
+            if r_str.replace(".", "", 1).isdigit():
+                return f"{int(float(r_str))}GB RAM"
+            return f"{raw_ram} RAM" if not str(raw_ram).upper().endswith("RAM") else str(raw_ram)
+
+        def _format_price(p: Dict[str, Any]) -> str:
+            raw_p = str(p.get("price", 0)).replace("₹", "").replace(",", "").strip()
+            try:
+                return f"₹{int(float(raw_p)):,}"
+            except Exception:
+                return f"₹{p.get('price', 0)}"
+
         rows = [
             ["📂 Category", *[str(p.get("category", "Laptop")) for p in products]],
-            ["💰 Price", *[f"₹{int(float(p.get('price', 0))):,}" for p in products]],
-            ["🧠 RAM", *[f"{int(float(p.get('ram_gb') or p.get('ram', 4)))}GB RAM" for p in products]],
+            ["💰 Price", *[_format_price(p) for p in products]],
+            ["🧠 RAM", *[_format_ram(p) for p in products]],
             ["⚡ Processor", *[str(p.get('processor') or p.get('cpu', 'N/A')) for p in products]],
             ["💾 Storage", *[str(p.get('storage', 'N/A')) for p in products]],
             ["🖥️ Display", *[str(p.get('display', 'Standard Display')) for p in products]],

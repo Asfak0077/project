@@ -16,6 +16,7 @@ from routes.products import format_product_response
 from utils.security import get_optional_user, get_current_user
 from services.product_data_validator import normalize_product_name
 from services.user_storage_service import UserStorageService
+from services.notification_service import NotificationService
 
 router = APIRouter(prefix="/compare", tags=["Compare"])
 
@@ -42,10 +43,11 @@ def compare_products(
     # Fetch products
     products: List[Product] = []
     for pid in data.product_ids:
-        if str(pid).isdigit():
-            p = db.query(Product).filter(Product.id == int(pid)).first()
+        pid_clean = pid.strip()
+        if pid_clean.isdigit():
+            p = db.query(Product).filter(Product.id == int(pid_clean)).first()
         else:
-            p = db.query(Product).filter(Product.product_code == str(pid)).first()
+            p = db.query(Product).filter(Product.product_code == pid_clean).first()
         if p and p not in products:
             products.append(p)
 
@@ -213,7 +215,7 @@ def compare_products(
             f"(Score: {overall_winner.score:.0f}/100) with high-efficiency display and {int(overall_winner.ram)}GB RAM."
         )
     else:
-        gpu_str = str(overall_winner.gpu or "").strip()
+        gpu_str = (overall_winner.gpu or "").strip()
         if not gpu_str or gpu_str.lower() in ["none", "unknown", "nan", "0", "0.0"] or "integrated" in gpu_str.lower():
             gpu_phrase = "integrated graphics"
         else:
@@ -226,13 +228,13 @@ def compare_products(
     # Persist to product_comparisons and comparison_history for logged-in user
     if current_user:
         try:
-            cid = f"comp_{'_'.join([str(p.id) for p in formatted_prods])}"
+            cid = f"comp_{'_'.join(str(p.id) for p in formatted_prods)}"
             res_dict = {
-                "products": [p.dict() if hasattr(p, "dict") else p for p in formatted_prods],
+                "products": [p.model_dump() for p in formatted_prods],
                 "winner_id": overall_winner.id,
                 "winner_name": clean_winner_name,
                 "winner_summary": summary_text,
-                "spec_rows": [r.dict() if hasattr(r, "dict") else r for r in spec_rows],
+                "spec_rows": [r.model_dump() for r in spec_rows],
             }
             UserStorageService.save_product_comparison(
                 db=db,
@@ -240,6 +242,14 @@ def compare_products(
                 comparison_id=cid,
                 product_ids=[p.id for p in formatted_prods],
                 comparison_result=res_dict
+            )
+            NotificationService.create_notification(
+                db=db,
+                user_id=current_user.id,
+                title="Comparison Ready",
+                message=f"Side-by-side comparison ready for {len(formatted_prods)} products. Winner: {clean_winner_name}",
+                type="COMPARISON",
+                reference_id=cid,
             )
         except Exception as e:
             db.rollback()

@@ -26,6 +26,10 @@ class ChatRequest(BaseModel):
     active_product_id: Optional[Any] = None
     shortlisted_ids: Optional[List[str]] = []
     context_products: Optional[List[Dict[str, Any]]] = []
+    selected_products: Optional[List[Dict[str, Any]]] = []
+    battle_result: Optional[Dict[str, Any]] = None
+    current_page_context: Optional[str] = "chat"
+    previous_messages: Optional[List[Any]] = []
     history: Optional[List[ChatMessage]] = []
 
 

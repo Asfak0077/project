@@ -27,6 +27,7 @@ class SessionState:
         self.active_category: Optional[str] = "Laptop"
         self.last_intent: Optional[str] = None
         self.last_query: Optional[str] = None
+        self.last_battle_result: Optional[Dict[str, Any]] = None
         self.previous_products: List[Dict[str, Any]] = []
         self.current_comparison_set: List[Dict[str, Any]] = []
         self.shortlisted_products: List[Dict[str, Any]] = []
@@ -70,6 +71,12 @@ class SessionState:
             self.current_comparison_set = unique_set
             self.touch()
 
+    def update_battle_result(self, battle_result: Optional[Dict[str, Any]]):
+        """Store last AI battle verdict / match object."""
+        if battle_result:
+            self.last_battle_result = battle_result
+            self.touch()
+
     def update_category(self, category: Optional[str]):
         if category:
             self.active_category = category
@@ -100,6 +107,8 @@ class SessionState:
             "active_category": self.active_category,
             "last_intent": self.last_intent,
             "last_query": self.last_query,
+            "last_battle_result": self.last_battle_result,
+            "battle_result": self.last_battle_result,
             "previous_products": self.previous_products,
             "comparison_products": self.current_comparison_set,
             "selected_products": self.current_comparison_set,
@@ -142,6 +151,7 @@ class ConversationMemoryService:
         answer: Optional[str] = None,
         intent: Optional[str] = None,
         comparison_products: Optional[List[Dict[str, Any]]] = None,
+        battle_result: Optional[Dict[str, Any]] = None,
         messages: Optional[List[Dict[str, Any]]] = None,
     ) -> SessionState:
         session = cls.get_or_create(session_id)
@@ -149,6 +159,8 @@ class ConversationMemoryService:
             session.update_product(product)
         if comparison_products is not None:
             session.update_comparison_set(comparison_products)
+        if battle_result is not None:
+            session.update_battle_result(battle_result)
         if category:
             session.update_category(category)
         if query and answer:

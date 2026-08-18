@@ -1,0 +1,86 @@
+version: '3.8'
+
+services:
+  # FastAPI Backend Service
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: versusai-backend
+    restart: always
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - DB_HOST=${DB_HOST}
+      - DB_PORT=${DB_PORT:-3306}
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_NAME=${DB_NAME}
+      - JWT_SECRET=${JWT_SECRET:-super_secret_production_key_versus_ai_2026}
+      - JWT_ALGORITHM=HS256
+      - ACCESS_TOKEN_EXPIRE_MINUTES=10080
+      - LLM_API_KEY=${LLM_API_KEY}
+      - CORS_ORIGINS=["http://localhost","http://localhost:3000","https://${DOMAIN:-localhost}"]
+      - CSV_DATASET_PATH=/app/data/optimized_laptops.csv
+      - DOCUMENTS_STORAGE_PATH=/app/documents
+      - UPLOAD_STORAGE_PATH=/app/uploads
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+    volumes:
+      - backend_uploads:/app/uploads
+      - backend_docs:/app/documents
+      - ./data:/app/data:ro
+      - ./deployment/aws/global-bundle.pem:/app/global-bundle.pem:ro
+    expose:
+      - "8000"
+    networks:
+      - versusai-net
+
+  # Next.js Frontend Service
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        - NEXT_PUBLIC_API_URL=/api
+    container_name: versusai-frontend
+    restart: always
+    environment:
+      - NODE_ENV=production
+      - NEXT_PUBLIC_API_URL=/api
+      - NEXT_PUBLIC_GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+    expose:
+      - "3000"
+    networks:
+      - versusai-net
+    depends_on:
+      - backend
+
+  # Nginx Reverse Proxy & Load Balancer
+  nginx:
+    build:
+      context: ./deployment/nginx
+      dockerfile: Dockerfile
+    container_name: versusai-nginx
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - backend_uploads:/app/uploads:ro
+      - certbot_etc:/etc/letsencrypt:ro
+      - certbot_var:/var/lib/letsencrypt:ro
+    networks:
+      - versusai-net
+    depends_on:
+      - backend
+      - frontend
+
+volumes:
+  backend_uploads:
+  backend_docs:
+  certbot_etc:
+  certbot_var:
+
+networks:
+  versusai-net:
+    driver: bridge

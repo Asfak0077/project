@@ -51,6 +51,23 @@ class ProductService:
         return [get_normalized_product_facts(p) for p in matches]
 
     @staticmethod
+    def search_by_category(db: Session, category: str, limit: int = 5) -> List[Dict[str, Any]]:
+        """Search products by category (Laptop, Phone, Tablet) with normalized facts."""
+        if not category or not category.strip():
+            return []
+        matches = (
+            db.query(Product)
+            .filter(
+                Product.is_active == True,
+                Product.category.ilike(f"%{category.strip()}%")
+            )
+            .order_by(Product.score.desc())
+            .limit(limit)
+            .all()
+        )
+        return [get_normalized_product_facts(p) for p in matches]
+
+    @staticmethod
     def get_spec_field(product_facts: Dict[str, Any], field: str) -> Optional[str]:
         """Extract formatted string value for a specific technical spec field."""
         f = field.lower().strip()

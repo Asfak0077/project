@@ -43,6 +43,19 @@ def _sanitize_for_json(data: Any) -> Any:
     return str(data)
 
 
+def _extract_uid(user_id: Any) -> int:
+    """Safely extracts integer user_id from integer, string, or SQLAlchemy User model."""
+    if user_id is None:
+        return 0
+    if hasattr(user_id, "id"):
+        val = getattr(user_id, "id")
+        return int(val) if val is not None else 0
+    try:
+        return int(user_id)
+    except (ValueError, TypeError):
+        return 0
+
+
 class UserStorageService:
     # =========================================================================
     # 1. AI CHAT HISTORY & CONVERSATIONS
@@ -51,7 +64,7 @@ class UserStorageService:
     @staticmethod
     def save_chat_message(
         db: Session,
-        user_id: int,
+        user_id: Any,
         conversation_id: str,
         role: str,
         message: str,
@@ -60,14 +73,15 @@ class UserStorageService:
     ) -> ChatHistory:
         """Persist a single chat turn (user or assistant) linked to user_id in MySQL."""
         cleaned_context = _sanitize_for_json(product_context) if product_context else []
+        uid = _extract_uid(user_id)
         record = ChatHistory(
-            user_id=int(user_id),
+            user_id=uid,
             conversation_id=conversation_id.strip(),
             role=str(role),
             message=str(message),
             intent=str(intent) if intent else None,
             product_context=cleaned_context,
-            created_at=datetime.datetime.utcnow(),
+            created_at=datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None),
         )
         db.add(record)
         db.commit()
@@ -77,13 +91,14 @@ class UserStorageService:
     @staticmethod
     def get_conversation_messages(
         db: Session,
-        user_id: int,
+        user_id: Any,
         conversation_id: str
     ) -> List[Dict[str, Any]]:
         """Retrieve all chronological messages for a conversation belonging to user_id."""
+        uid = _extract_uid(user_id)
         rows = (
             db.query(ChatHistory)
-            .filter(ChatHistory.user_id == int(user_id), ChatHistory.conversation_id == conversation_id.strip())
+            .filter(ChatHistory.user_id == uid, ChatHistory.conversation_id == conversation_id.strip())
             .order_by(ChatHistory.created_at.asc())
             .all()
         )
@@ -105,20 +120,21 @@ class UserStorageService:
     @staticmethod
     def get_user_conversations(
         db: Session,
-        user_id: int,
+        user_id: Any,
         limit: int = 50
     ) -> List[Dict[str, Any]]:
         """
         List all distinct conversations for the user with topic title, last message,
         and timestamp.
         """
+        uid = _extract_uid(user_id)
         subq = (
             db.query(
                 ChatHistory.conversation_id,
                 func.max(ChatHistory.created_at).label("max_created"),
                 func.count(ChatHistory.id).label("msg_count"),
             )
-            .filter(ChatHistory.user_id == int(user_id))
+            .filter(ChatHistory.user_id == uid)
             .group_by(ChatHistory.conversation_id)
             .subquery()
         )
@@ -130,7 +146,7 @@ class UserStorageService:
                 (ChatHistory.conversation_id == subq.c.conversation_id)
                 & (ChatHistory.created_at == subq.c.max_created),
             )
-            .filter(ChatHistory.user_id == int(user_id))
+            .filter(ChatHistory.user_id == uid)
             .order_by(desc(ChatHistory.created_at))
             .limit(limit)
             .all()
@@ -141,7 +157,7 @@ class UserStorageService:
             first_user_msg = (
                 db.query(ChatHistory)
                 .filter(
-                    ChatHistory.user_id == int(user_id),
+                    ChatHistory.user_id == uid,
                     ChatHistory.conversation_id == last_msg.conversation_id,
                     ChatHistory.role == "user",
                 )
@@ -169,12 +185,12 @@ class UserStorageService:
     @staticmethod
     def delete_conversation(
         db: Session,
-        user_id: int,
+        user_id: Any,
         conversation_id: str
     ) -> bool:
         """Delete conversation messages and stored context for user_id."""
         cid = conversation_id.strip()
-        uid = int(user_id)
+        uid = _extract_uid(user_id)
         db.query(ChatHistory).filter(
             ChatHistory.user_id == uid,
             ChatHistory.conversation_id == cid
@@ -195,14 +211,14 @@ class UserStorageService:
     @staticmethod
     def save_product_comparison(
         db: Session,
-        user_id: int,
+        user_id: Any,
         comparison_id: str,
         product_ids: List[Any],
         comparison_result: Optional[Dict[str, Any]] = None
     ) -> ProductComparison:
         """Persist a product comparison matrix for user_id in MySQL."""
         cid = comparison_id.strip()
-        uid = int(user_id)
+        uid = _extract_uid(user_id)
         clean_pids = _sanitize_for_json(product_ids)
         clean_res = _sanitize_for_json(comparison_result)
 
@@ -215,7 +231,7 @@ class UserStorageService:
         if existing:
             existing.product_ids = clean_pids
             existing.comparison_result = clean_res
-            existing.created_at = datetime.datetime.utcnow()
+            existing.created_at = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
             db.commit()
             db.refresh(existing)
             return existing
@@ -225,7 +241,7 @@ class UserStorageService:
             comparison_id=cid,
             product_ids=clean_pids,
             comparison_result=clean_res,
-            created_at=datetime.datetime.utcnow(),
+            created_at=datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None),
         )
         db.add(record)
         db.commit()
@@ -235,13 +251,14 @@ class UserStorageService:
     @staticmethod
     def get_user_comparisons(
         db: Session,
-        user_id: int,
+        user_id: Any,
         limit: int = 50
     ) -> List[Dict[str, Any]]:
         """Retrieve all saved comparisons for user_id."""
+        uid = _extract_uid(user_id)
         rows = (
             db.query(ProductComparison)
-            .filter(ProductComparison.user_id == int(user_id))
+            .filter(ProductComparison.user_id == uid)
             .order_by(desc(ProductComparison.created_at))
             .limit(limit)
             .all()
@@ -262,12 +279,13 @@ class UserStorageService:
     @staticmethod
     def delete_product_comparison(
         db: Session,
-        user_id: int,
+        user_id: Any,
         comparison_id: str
     ) -> bool:
         """Delete a saved comparison for user_id."""
+        uid = _extract_uid(user_id)
         db.query(ProductComparison).filter(
-            ProductComparison.user_id == int(user_id),
+            ProductComparison.user_id == uid,
             ProductComparison.comparison_id == comparison_id.strip()
         ).delete(synchronize_session=False)
         db.commit()
@@ -280,7 +298,7 @@ class UserStorageService:
     @staticmethod
     def save_conversation_context(
         db: Session,
-        user_id: int,
+        user_id: Any,
         conversation_id: str,
         active_products: Optional[List[Any]] = None,
         selected_products: Optional[List[Any]] = None,
@@ -288,7 +306,7 @@ class UserStorageService:
     ) -> ConversationContext:
         """Upsert user's active products context in MySQL."""
         cid = conversation_id.strip()
-        uid = int(user_id)
+        uid = _extract_uid(user_id)
         clean_active = _sanitize_for_json(active_products) if active_products is not None else []
         clean_selected = _sanitize_for_json(selected_products) if selected_products is not None else []
 
@@ -305,7 +323,7 @@ class UserStorageService:
                 row.selected_products = clean_selected
             if last_intent is not None:
                 row.last_intent = str(last_intent)
-            row.updated_at = datetime.datetime.utcnow()
+            row.updated_at = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
         else:
             row = ConversationContext(
                 user_id=uid,
@@ -313,7 +331,7 @@ class UserStorageService:
                 active_products=clean_active,
                 selected_products=clean_selected,
                 last_intent=str(last_intent) if last_intent else None,
-                updated_at=datetime.datetime.utcnow(),
+                updated_at=datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None),
             )
             db.add(row)
 
@@ -324,11 +342,11 @@ class UserStorageService:
     @staticmethod
     def get_conversation_context(
         db: Session,
-        user_id: int,
+        user_id: Any,
         conversation_id: str
     ) -> Optional[Dict[str, Any]]:
         """Retrieve active products and context for user_id and conversation_id."""
-        uid = int(user_id)
+        uid = _extract_uid(user_id)
         row = (
             db.query(ConversationContext)
             .filter(ConversationContext.user_id == uid, ConversationContext.conversation_id == conversation_id.strip())
@@ -350,7 +368,7 @@ class UserStorageService:
             "conversation_id": row.conversation_id,
             "active_products": row.active_products or [],
             "selected_products": row.selected_products or [],
-            "last_intent": row.last_intent,
+            "last_intent": row.last_intent or "general",
             "updated_at": row.updated_at.isoformat() if row.updated_at else None,
         }
 

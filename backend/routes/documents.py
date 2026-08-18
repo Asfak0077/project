@@ -18,6 +18,7 @@ from schemas.document import (
     SourceCitationItem,
 )
 from services.rag_service import RAGService
+from services.notification_service import NotificationService
 from utils.security import get_optional_user, get_current_user
 from utils.config import settings
 
@@ -80,17 +81,38 @@ async def upload_document(
     db.commit()
     db.refresh(doc)
 
+    if current_user:
+        NotificationService.create_notification(
+            db=db,
+            user_id=current_user.id,
+            title="Document Upload Started",
+            message=f"Processing and semantic chunking for '{fname}'...",
+            type="RAG",
+            reference_id=str(getattr(doc, "id", "")),
+        )
+
     # Process and index document chunks with semantic chunking
     try:
-        doc_id_val = int(getattr(doc, "id"))
+        doc_id_val = int(getattr(doc, "id", 0))
         total_chunks = RAGService.process_and_index_document(db, doc_id_val)
         setattr(doc, "chunk_count", total_chunks)
         db.commit()
+
+        if current_user:
+            NotificationService.create_notification(
+                db=db,
+                user_id=current_user.id,
+                title="Document Ready for AI",
+                message=f"'{fname}' is fully indexed with {total_chunks} sections and ready for Q&A.",
+                type="RAG",
+                reference_id=str(getattr(doc, "id", "")),
+            )
     except Exception as e:
         logger.error(f"Error indexing document {getattr(doc, 'id', 'unknown')}: {e}", exc_info=True)
+        err_msg = str(e) or "Unable to extract text or index document"
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"I could not process this document request. Please try again."
+            detail=f"Document processing failed: {err_msg}"
         )
 
     db.refresh(doc)
@@ -190,13 +212,13 @@ def rag_chat(
     except Exception as e:
         logger.error(f"Error in RAG chat: {e}", exc_info=True)
         return RAGChatResponse(
-            answer="I could not process this document request. Please try again.",
+            answer="I could not find this information in the document.",
             sources=[],
             confidence="Low",
             rag_version="ver2",
             document_used=False,
             type="error",
-            suggested_followups=["What are the specifications?", "Explain performance"],
+            suggested_followups=["Summarize document", "What are the specifications?", "Explain performance"],
             debug_trace={"error": str(e)},
         )
 

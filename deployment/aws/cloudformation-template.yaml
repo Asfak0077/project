@@ -1,0 +1,124 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'VersusAI Infrastructure: AWS EC2 (Next.js + FastAPI + Docker) and AWS RDS MySQL 8.0'
+
+Parameters:
+  KeyName:
+    Description: Name of an existing EC2 KeyPair to enable SSH access
+    Type: AWS::EC2::KeyPair::KeyName
+    ConstraintDescription: Must be the name of an existing EC2 KeyPair.
+
+  DBMasterUsername:
+    Description: Master username for AWS RDS MySQL Database
+    Type: String
+    Default: admin
+    MinLength: 1
+    MaxLength: 16
+    AllowedPattern: '[a-zA-Z][a-zA-Z0-9]*'
+
+  DBMasterPassword:
+    Description: Master password for AWS RDS MySQL Database (min 8 characters)
+    Type: String
+    NoEcho: true
+    MinLength: 8
+    MaxLength: 41
+
+  InstanceType:
+    Description: Web Server EC2 instance type
+    Type: String
+    Default: t3.medium
+    AllowedValues:
+      - t3.small
+      - t3.medium
+      - t3.large
+      - t3.xlarge
+
+Resources:
+  # 1. VPC & Security Groups
+  ServerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Enable SSH, HTTP, and HTTPS access for VersusAI Web Server
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+
+  DBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow MySQL access from VersusAI EC2 Web Server
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref ServerSecurityGroup
+
+  # 2. AWS RDS MySQL Database Instance
+  VersusAIRDSInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: versusai-mysql-prod
+      Engine: mysql
+      EngineVersion: '8.0'
+      DBInstanceClass: db.t3.micro
+      AllocatedStorage: '20'
+      StorageType: gp3
+      MasterUsername: !Ref DBMasterUsername
+      MasterUserPassword: !Ref DBMasterPassword
+      DBName: my_project
+      VPCSecurityGroups:
+        - !GetAtt DBSecurityGroup.GroupId
+      PubliclyAccessible: true
+      BackupRetentionPeriod: 7
+      MultiAZ: false
+
+  # 3. AWS EC2 Web Server Instance
+  VersusAIEC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyName
+      SecurityGroups:
+        - !Ref ServerSecurityGroup
+      ImageId: ami-0c7217cdde317cfec # Ubuntu 24.04 LTS (us-east-1 default)
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: 30
+            VolumeType: gp3
+            DeleteOnTermination: true
+      Tags:
+        - Key: Name
+          Value: VersusAI-Production-Server
+
+  # 4. Static Elastic IP
+  ServerElasticIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      InstanceId: !Ref VersusAIEC2Instance
+
+Outputs:
+  EC2PublicIP:
+    Description: Public Elastic IP of VersusAI Production Server
+    Value: !Ref ServerElasticIP
+
+  RDSMySQLHost:
+    Description: AWS RDS MySQL Endpoint Host
+    Value: !GetAtt VersusAIRDSInstance.Endpoint.Address
+
+  RDSMySQLPort:
+    Description: AWS RDS MySQL Port
+    Value: !GetAtt VersusAIRDSInstance.Endpoint.Port
+
+  AppURL:
+    Description: VersusAI Application Web URL
+    Value: !Sub 'http://${ServerElasticIP}'

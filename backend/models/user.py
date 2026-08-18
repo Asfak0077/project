@@ -29,8 +29,8 @@ class User(Base):
     is_active = Column(Boolean, default=True)
     is_admin = Column(Boolean, default=False)
     role_id = Column(Integer, ForeignKey("roles.id", ondelete="SET NULL"), nullable=True)
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None))
+    updated_at = Column(DateTime, default=lambda: datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None), onupdate=lambda: datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None))
 
     role = relationship("Role", back_populates="users")
     preferences = relationship("UserPreference", back_populates="user", uselist=False, cascade="all, delete-orphan")
@@ -40,6 +40,8 @@ class User(Base):
     recommendations = relationship("Recommendation", back_populates="user", cascade="all, delete-orphan")
     feedbacks = relationship("Feedback", back_populates="user", cascade="all, delete-orphan")
     documents = relationship("Document", back_populates="user", cascade="all, delete-orphan")
+    notifications = relationship("Notification", back_populates="user", cascade="all, delete-orphan")
+    battle_histories = relationship("ProductBattleHistory", back_populates="user", cascade="all, delete-orphan")
 
 class UserPreference(Base):
     __tablename__ = "user_preferences"
@@ -56,7 +58,7 @@ class UserPreference(Base):
     budget_max = Column(Float, default=150000.0)
     preferred_brands = Column(JSON, nullable=True)  # List of brand names
     priority_features = Column(JSON, nullable=True)  # List of priority feature tags e.g. ["Performance", "Battery"]
-    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=lambda: datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None), onupdate=lambda: datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None))
 
     user = relationship("User", back_populates="preferences")
 
@@ -68,4 +70,4 @@ class PasswordOTP(Base):
     otp_code = Column(String(10), nullable=False)
     expires_at = Column(DateTime, nullable=False)
     is_used = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None))

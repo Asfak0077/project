@@ -4,6 +4,8 @@
   "extraPaths": [
     "backend",
     "CTS Hackathon",
+    "new rag/src",
+    "new rag/ver2/src",
     "backend/venv/lib/python3.14/site-packages"
   ]
 }

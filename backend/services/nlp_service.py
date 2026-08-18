@@ -13,6 +13,7 @@ logger = logging.getLogger("backend.nlp")
 
 
 class IntentType:
+    SPEC_QUERY = "SPEC_QUERY"
     PRODUCT_PRICE = "PRODUCT_PRICE"
     PRODUCT_RAM = "PRODUCT_RAM"
     PRODUCT_STORAGE = "PRODUCT_STORAGE"
@@ -21,10 +22,16 @@ class IntentType:
     PRODUCT_SPECIFICATION = "PRODUCT_SPECIFICATION"
     PRODUCT_DETAILS = "PRODUCT_DETAILS"
     PRODUCT_EXPLAIN = "PRODUCT_EXPLAIN"
+    PRODUCT_EXPLANATION = "PRODUCT_EXPLAIN"
     PRODUCT_RECOMMENDATION = "PRODUCT_RECOMMENDATION"
     PRODUCT_RECOMMEND = "PRODUCT_RECOMMENDATION"
     PRODUCT_COMPARISON = "PRODUCT_COMPARISON"
     PRODUCT_COMPARE = "PRODUCT_COMPARISON"
+    COMPARISON_QUERY = "PRODUCT_COMPARISON"
+    PRODUCT_BATTLE = "PRODUCT_BATTLE"
+    BATTLE_VERDICT = "BATTLE_VERDICT"
+    BATTLE_EXPLANATION = "BATTLE_EXPLANATION"
+    BATTLE_REASON = "BATTLE_EXPLANATION"
     PERFORMANCE_ANALYSIS = "PERFORMANCE_ANALYSIS"
     PRICE_ANALYSIS = "PRICE_ANALYSIS"
     BATTERY_ANALYSIS = "BATTERY_ANALYSIS"
@@ -359,36 +366,63 @@ class NLPService:
         # 3. Intent Classification
         intent = IntentType.UNKNOWN
 
+        # A0. AI Battle Reason & Explanation Queries (e.g. "Why did ASUS win?", "Why did ASUS ROG Zephyrus win the battle?", "Why is this better?")
+        is_battle_reason_query = (
+            any(p in q for p in [
+                "why did", "why wins", "why won", "why does", "explain battle", "reason for winning",
+                "why is it better", "why is this better", "why winner", "reason why", "how did",
+                "why beat", "why defeated", "why victory", "why win", "why is", "what made"
+            ]) and any(w in q for w in ["win", "won", "winner", "better", "battle", "versus", "vs", "beat", "defeat", "score", "champion"])
+        ) or any(p in q for p in [
+            "why did asus win", "why did product 1 win", "why is product 1 better", "why is asus better",
+            "why did the winner win", "why won the battle", "why win the battle", "why did"
+        ]) or ("why" in words and any(w in words for w in ["win", "won", "winner", "better", "battle", "beat"]))
+
+        is_verdict_query = any(p in q for p in [
+            "who wins", "who won", "which is the winner", "who is the winner", "which one wins",
+            "who is better overall", "battle verdict", "winner of the battle", "who is victorious"
+        ])
+        is_battle_query = any(w in q for w in ["battle", "fight", "clash", "ai battle", "versus battle", "product battle"])
+
+        if is_battle_reason_query:
+            intent = IntentType.BATTLE_EXPLANATION
+
+        elif is_verdict_query:
+            intent = IntentType.BATTLE_VERDICT
+
+        elif is_battle_query and not is_battle_reason_query:
+            intent = IntentType.PRODUCT_BATTLE
+
         # A. RAG Document queries (explicitly asking about datasheet, manual, PDF, cooling/thermal)
-        if any(w in q for w in ["pdf", "datasheet", "document", "manual", "page", "file say", "according to the doc", "uploaded", "cooling", "thermal"]):
+        elif any(w in q for w in ["pdf", "datasheet", "document", "manual", "page", "file say", "according to the doc", "uploaded", "cooling", "thermal"]):
             intent = IntentType.RAG_DOCUMENT_QUERY
 
         # B. Product Comparison queries
-        elif comp_sel["is_comparison"]:
+        elif comp_sel["is_comparison"] and not is_battle_reason_query:
             intent = IntentType.PRODUCT_COMPARISON
 
+        # D. Product Details / Explanation queries (e.g. "explain product 1", "Tell me about ASUS", "Explain ASUS", "describe product 2")
+        elif any(w in q for w in ["explain", "analyze", "analysis", "breakdown", "tell me about", "overview of", "describe", "product explain", "details of", "about this"]) and not is_battle_reason_query:
+            intent = IntentType.PRODUCT_EXPLAIN
+
         # C. Single Spec / Attribute Queries (Strict direct database lookup)
-        elif detected_spec_field == "price" and not any(w in q for w in ["best", "recommend", "suggest", "compare", "vs", "better", "between"]):
+        elif detected_spec_field == "price" and not any(w in q for w in ["best", "recommend", "suggest", "compare", "vs", "better", "between", "why", "explain"]):
             intent = IntentType.PRODUCT_PRICE
 
-        elif detected_spec_field == "ram" and not any(w in q for w in ["best", "recommend", "suggest", "compare", "vs", "better", "between"]):
+        elif detected_spec_field == "ram" and not any(w in q for w in ["best", "recommend", "suggest", "compare", "vs", "better", "between", "why", "explain"]):
             intent = IntentType.PRODUCT_RAM
 
-        elif detected_spec_field == "storage" and not any(w in q for w in ["best", "recommend", "suggest", "compare", "vs", "better", "between"]):
+        elif detected_spec_field == "storage" and not any(w in q for w in ["best", "recommend", "suggest", "compare", "vs", "better", "between", "why", "explain"]):
             intent = IntentType.PRODUCT_STORAGE
 
-        elif detected_spec_field == "processor" and not any(w in q for w in ["best", "recommend", "suggest", "compare", "vs", "better", "between"]):
+        elif detected_spec_field == "processor" and not any(w in q for w in ["best", "recommend", "suggest", "compare", "vs", "better", "between", "why", "explain"]):
             intent = IntentType.PRODUCT_PROCESSOR
 
-        elif detected_spec_field == "battery" and not any(w in q for w in ["best", "recommend", "suggest", "compare", "vs", "better", "between"]):
+        elif detected_spec_field == "battery" and not any(w in q for w in ["best", "recommend", "suggest", "compare", "vs", "better", "between", "why", "explain"]):
             intent = IntentType.PRODUCT_BATTERY
 
-        elif detected_spec_field is not None and not any(w in q for w in ["best", "recommend", "suggest", "compare", "vs", "better", "between"]):
+        elif detected_spec_field is not None and not any(w in q for w in ["best", "recommend", "suggest", "compare", "vs", "better", "between", "why", "explain"]):
             intent = IntentType.PRODUCT_SPECIFICATION
-
-        # D. Product Details / Analysis queries (e.g. "explain product 1", "2 product explain", "analyze product 1 and 2")
-        elif any(w in q for w in ["explain", "analyze", "analysis", "breakdown", "tell me about", "overview of", "details of", "specs of", "specifications of", "info on", "about this", "describe", "product explain"]):
-            intent = IntentType.PRODUCT_EXPLAIN
 
         # E. Recommendation queries (e.g. "best gaming laptop", "recommend 5G phone")
         elif any(w in q for w in ["best", "recommend", "recommendation", "suggest", "which should i buy", "which one should i buy", "top 5", "top 10", "suggest me"]):
@@ -563,6 +597,9 @@ class NLPService:
             "product_names": product_names,
             "is_followup": cls.detect_followup(query),
             "is_document_query": is_document_query,
+            "is_explain": comp_sel.get("is_explain", False) or intent in [IntentType.PRODUCT_EXPLAIN, IntentType.PRODUCT_EXPLANATION, IntentType.PRODUCT_DETAILS],
+            "is_battle": is_battle_reason_query or is_verdict_query or is_battle_query or intent in [IntentType.BATTLE_EXPLANATION, IntentType.BATTLE_VERDICT, IntentType.PRODUCT_BATTLE, IntentType.BATTLE_REASON],
+            "is_compare": comp_sel.get("is_comparison", False) or intent in [IntentType.PRODUCT_COMPARISON, IntentType.COMPARISON_QUERY],
             "is_comparison": comp_sel["is_comparison"],
             "is_compare_all": comp_sel["is_compare_all"],
             "target_product_index": comp_sel.get("target_product_index"),

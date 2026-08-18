@@ -37,8 +37,8 @@ class Settings(BaseSettings):
     
     # RAG VER2 Configuration Settings
     RAG_VERSION: str = "ver2"
-    RAG_VER2_ROOT: str = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../new rag/ver2"))
-    RAG_VECTOR_DB_PATH: str = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../new rag/ver2/data/vector_db"))
+    RAG_VER2_ROOT: str = os.path.abspath(os.path.join(os.path.dirname(__file__), "../services/rag"))
+    RAG_VECTOR_DB_PATH: str = os.path.abspath(os.path.join(os.path.dirname(__file__), "../services/rag/vector_db"))
     RAG_EMBEDDING_MODEL: str = os.getenv("RAG_EMBEDDING_MODEL", "all-MiniLM-L6-v2")
     RAG_TOP_K: int = int(os.getenv("RAG_TOP_K", "5"))
 

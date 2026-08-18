@@ -20,6 +20,7 @@ from services.product_data_validator import (
     get_data_quality_report,
 )
 from utils.security import get_optional_user, get_current_user
+from services.notification_service import NotificationService
 
 logger = logging.getLogger("backend.chat")
 
@@ -49,13 +50,14 @@ def _resolve_contextual_products(
     direct_product_id: Optional[Any],
     shortlisted_ids: Optional[List[str]],
     context_products: Optional[List[Dict[str, Any]]],
+    selected_products: Optional[List[Dict[str, Any]]],
     history: Optional[List[Any]],
     session_id: Optional[str] = None,
-    user_id: Optional[int] = None,
+    user_id: Optional[Any] = None,
 ) -> List[Dict[str, Any]]:
     """
     Deterministically resolve active products from:
-    1. Direct context_products array from request
+    1. Direct context_products or selected_products array from request
     2. User-specific database conversation_context
     3. Direct active_product_id or product_id
     4. Named product entities in query (e.g. 'MSI GL62M', 'iPhone 15')
@@ -65,9 +67,10 @@ def _resolve_contextual_products(
     """
     resolved: List[Dict[str, Any]] = []
 
-    # 1. Direct context_products list from API request
-    if context_products:
-        sorted_cp = sorted(context_products, key=lambda x: x.get("index", 999))
+    # 1. Direct context_products or selected_products list from API request
+    raw_products = context_products or selected_products or []
+    if raw_products:
+        sorted_cp = sorted(raw_products, key=lambda x: x.get("index", 999))
         for idx, cp in enumerate(sorted_cp, start=1):
             c_index = cp.get("index") or idx
             cp_id = cp.get("id") or cp.get("product_id")
@@ -185,6 +188,11 @@ def handle_chat_message(
 
         # 1. NLP Intent & Entity Extraction
         mem = ConversationMemoryService.get_or_create(sid)
+        if data.battle_result:
+            mem.update_battle_result(data.battle_result)
+        if data.selected_products:
+            mem.update_comparison_set(data.selected_products)
+
         nlp_data = NLPService.parse_query_heuristics(
             user_query,
             conversation_context={"active_product_name": mem.active_product_name, "category": mem.active_category}
@@ -199,6 +207,7 @@ def handle_chat_message(
             direct_pid,
             data.shortlisted_ids,
             data.context_products,
+            data.selected_products,
             data.history,
             session_id=sid,
             user_id=user_id
@@ -299,7 +308,7 @@ def handle_chat_message(
         debug_trace["timing"] = timing
         response_mode = route_result.get("response_mode", "FAST")
 
-        return ChatResponse(
+        response = ChatResponse(
             message=ans_msg,
             answer=ans_msg,
             intent=route_result.get("intent", IntentType.UNKNOWN),
@@ -331,6 +340,20 @@ def handle_chat_message(
             debug_trace=debug_trace,
             response_mode=response_mode,
         )
+
+        if current_user:
+            notif_title = "AI Analysis Completed" if response_mode == "FAST" else ("RAG Document Analysis Ready" if response_mode == "RAG" else "AI Chat Response Ready")
+            notif_type = "RAG" if response_mode == "RAG" else "AI_CHAT"
+            NotificationService.create_notification(
+                db=db,
+                user_id=current_user.id,
+                title=notif_title,
+                message=f"Analysis completed for query: '{user_query[:60]}'",
+                type=notif_type,
+                reference_id=sid,
+            )
+
+        return response
     except Exception as e:
         logger.error(f"Error in handle_chat_message for query '{user_query}': {e}", exc_info=True)
         fallback_msg = "I couldn't complete the product analysis. Please try again."
@@ -377,7 +400,7 @@ def get_user_conversations(
     """
     if not current_user:
         return []
-    return UserStorageService.get_user_conversations(db=db, user_id=int(current_user.id))
+    return UserStorageService.get_user_conversations(db=db, user_id=current_user.id)
 
 
 @router.get("/chat/conversations/{conversation_id}")
@@ -394,7 +417,7 @@ def get_conversation_messages(
         return []
     return UserStorageService.get_conversation_messages(
         db=db,
-        user_id=int(current_user.id),
+        user_id=current_user.id,
         conversation_id=conversation_id
     )
 
@@ -410,7 +433,7 @@ def delete_user_conversation(
     """
     UserStorageService.delete_conversation(
         db=db,
-        user_id=int(current_user.id),
+        user_id=current_user.id,
         conversation_id=conversation_id
     )
     return {"status": "deleted", "conversation_id": conversation_id}
@@ -430,7 +453,7 @@ def get_user_chat_context(
 
     ctx = UserStorageService.get_conversation_context(
         db=db,
-        user_id=int(current_user.id),
+        user_id=current_user.id,
         conversation_id=conversation_id
     )
     if not ctx:
@@ -456,16 +479,17 @@ def save_user_chat_context(
 
     ctx = UserStorageService.save_conversation_context(
         db=db,
-        user_id=int(current_user.id),
+        user_id=current_user.id,
         conversation_id=req.conversation_id,
         active_products=req.active_products,
         selected_products=req.selected_products,
         last_intent=req.last_intent
     )
+    prod_cnt = len(req.active_products or [])
     return {
         "status": "saved",
         "conversation_id": ctx.conversation_id,
-        "product_count": len(list(ctx.active_products or [])),
+        "product_count": prod_cnt,
     }
 
 

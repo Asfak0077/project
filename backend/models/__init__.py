@@ -6,6 +6,8 @@ from models.chat_history import ChatHistory, ProductComparison, ConversationCont
 from models.recommendation import Recommendation, RecommendationItem
 from models.document import Document, DocumentChunk
 from models.feedback import Feedback
+from models.notification import Notification
+from models.battle import ProductBattleHistory
 
 __all__ = [
     "User",
@@ -28,4 +30,6 @@ __all__ = [
     "Document",
     "DocumentChunk",
     "Feedback",
+    "Notification",
+    "ProductBattleHistory",
 ]

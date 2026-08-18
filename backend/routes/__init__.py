@@ -11,6 +11,8 @@ from routes.feedback import router as feedback_router
 from routes.admin import router as admin_router
 from routes.dashboard import router as dashboard_router
 from routes.session import router as session_router
+from routes.notifications import router as notifications_router
+from routes.battle import router as battle_router
 
 __all__ = [
     "auth_router",
@@ -26,4 +28,6 @@ __all__ = [
     "admin_router",
     "dashboard_router",
     "session_router",
+    "notifications_router",
+    "battle_router",
 ]

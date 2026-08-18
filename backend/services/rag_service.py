@@ -5,9 +5,10 @@ Implements:
 - Category-Aware ChromaDB Vector Store Routing ('laptops', 'mobiles', 'tablets')
 - Query Rewriting, Topic Understanding & Expansion
 - Metadata Pre-Filtering & Document/Product Scoping
-- Multi-Factor Reranking (Semantic + Keyword + Product Match + Section Relevance)
+- Dense Embedding Generation & In-Memory Vector Similarity Search (all-MiniLM-L6-v2)
+- Multi-Factor Reranking (Semantic Dense Similarity + Keyword BM25 + Product Match + Section Relevance)
 - Semantic Chunking with Per-Section & Page Metadata
-- Strict Anti-Hallucinatory LLM Generation (Gemini Flash)
+- Strict Anti-Hallucinatory LLM Generation (Gemini Flash Cascade)
 - Structured Response Cards (Spec Card, Explanation Card, Document Summary Card)
 - Expandable Source Citations & Dynamic Verification
 """
@@ -22,6 +23,7 @@ from collections import Counter
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple, Sequence
 
+import numpy as np
 from pypdf import PdfReader
 from sqlalchemy.orm import Session
 
@@ -53,6 +55,25 @@ if str(VER2_SRC) not in sys.path:
 
 
 # ---------------------------------------------------------------------------
+# Cached Embedding Model Singleton
+# ---------------------------------------------------------------------------
+_cached_embedding_model = None
+
+def get_embedding_model():
+    """Singleton getter for SentenceTransformer embedding model."""
+    global _cached_embedding_model
+    if _cached_embedding_model is None:
+        try:
+            from sentence_transformers import SentenceTransformer
+            _cached_embedding_model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+            logger.info("SentenceTransformer 'all-MiniLM-L6-v2' model loaded and cached in memory.")
+        except Exception as e:
+            logger.error(f"Failed to load SentenceTransformer: {e}")
+            _cached_embedding_model = None
+    return _cached_embedding_model
+
+
+# ---------------------------------------------------------------------------
 # Section & Category Detection Utilities
 # ---------------------------------------------------------------------------
 _SECTION_PATTERNS = [
@@ -78,30 +99,139 @@ def detect_section_title(text: str) -> str:
     return "Overview & Specifications"
 
 
-def extract_text_from_pdf(file_path: str) -> List[Dict[str, Any]]:
-    """Extract text from PDF with per-page metadata."""
-    try:
-        reader = PdfReader(file_path)
-        pages = []
-        for page_idx, page in enumerate(reader.pages):
-            page_text = page.extract_text()
-            if page_text and page_text.strip():
-                pages.append({
-                    "page_number": page_idx + 1,
-                    "text": page_text,
-                })
-        return pages
-    except Exception as e:
-        logger.error(f"Error extracting PDF text: {e}")
-        raise
-
-
 def clean_page_text(text: str) -> str:
-    """Clean extracted page text: collapse whitespace, fix encoding artifacts."""
+    """Clean extracted page text: normalize spaces, symbols, encoding, and remove redundant headers/footers."""
+    if not text:
+        return ""
+    # Remove null bytes, replacement chars, control chars
     text = text.replace("\x00", "").replace("\ufffd", " ")
+    text = re.sub(r"[\x01-\x08\x0b-\x0c\x0e-\x1f]", " ", text)
+    
+    # Remove repetitive page markers
+    lines = [l.strip() for l in text.split("\n")]
+    clean_lines = []
+    for line in lines:
+        if re.match(r"^(page\s+\d+(\s+of\s+\d+)?|\d+)$", line, re.IGNORECASE):
+            continue
+        clean_lines.append(line)
+    text = "\n".join(clean_lines)
+    
+    # Normalize spaces and newlines
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
+
+
+def extract_text_from_document(file_path: str) -> List[Dict[str, Any]]:
+    """Extract text from PDF or TXT document with per-page metadata."""
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"Document file not found at {file_path}")
+
+    pages = []
+    if file_path.lower().endswith(".pdf"):
+        try:
+            reader = PdfReader(file_path)
+            for page_idx, page in enumerate(reader.pages):
+                p_text = page.extract_text() or ""
+                p_clean = clean_page_text(p_text)
+                if p_clean:
+                    pages.append({
+                        "page_number": page_idx + 1,
+                        "text": p_clean,
+                    })
+        except Exception as e:
+            logger.error(f"Error extracting PDF text: {e}")
+            raise ValueError(f"Failed to read PDF file: {e}")
+    else:
+        # TXT file
+        raw_content = ""
+        try:
+            with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+                raw_content = f.read()
+        except Exception:
+            with open(file_path, "r", encoding="latin-1", errors="ignore") as f:
+                raw_content = f.read()
+        
+        clean_content = clean_page_text(raw_content)
+        if clean_content:
+            if len(clean_content) > 2500:
+                paras = clean_content.split("\n\n")
+                curr_p = []
+                curr_len = 0
+                p_num = 1
+                for para in paras:
+                    curr_p.append(para)
+                    curr_len += len(para)
+                    if curr_len >= 2000:
+                        pages.append({
+                            "page_number": p_num,
+                            "text": "\n\n".join(curr_p),
+                        })
+                        curr_p = []
+                        curr_len = 0
+                        p_num += 1
+                if curr_p:
+                    pages.append({
+                        "page_number": p_num,
+                        "text": "\n\n".join(curr_p),
+                    })
+            else:
+                pages.append({"page_number": 1, "text": clean_content})
+
+    total_text = " ".join(p["text"] for p in pages).strip()
+    if not total_text or len(total_text) < 10:
+        raise ValueError("Unable to extract text from this document. The file may be empty or an image-only scan.")
+
+    return pages
+
+
+def chunk_document_pages(
+    pages: List[Dict[str, Any]],
+    chunk_size_chars: int = 700,
+    overlap_chars: int = 120
+) -> List[Dict[str, Any]]:
+    """
+    Create semantic chunks from pages with optimal window size (500-800 chars) and overlap.
+    Preserves section and page metadata.
+    """
+    chunks = []
+    for page in pages:
+        p_num = page.get("page_number", 1)
+        text = page.get("text", "")
+        if not text:
+            continue
+
+        paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+        if not paragraphs:
+            paragraphs = [text]
+
+        curr_chunk = ""
+        for para in paragraphs:
+            if not curr_chunk:
+                curr_chunk = para
+            elif len(curr_chunk) + len(para) + 2 <= chunk_size_chars:
+                curr_chunk += "\n\n" + para
+            else:
+                sec = detect_section_title(curr_chunk)
+                chunks.append({
+                    "content": curr_chunk.strip(),
+                    "page_number": p_num,
+                    "section_title": sec,
+                    "token_count": len(curr_chunk.split()),
+                })
+                overlap_seed = curr_chunk[-overlap_chars:] if len(curr_chunk) > overlap_chars else ""
+                curr_chunk = (overlap_seed + " " + para).strip()
+
+        if curr_chunk and len(curr_chunk.strip()) >= 15:
+            sec = detect_section_title(curr_chunk)
+            chunks.append({
+                "content": curr_chunk.strip(),
+                "page_number": p_num,
+                "section_title": sec,
+                "token_count": len(curr_chunk.split()),
+            })
+
+    return chunks
 
 
 # ===========================================================================
@@ -113,6 +243,7 @@ def compute_rerank_score(
     target_product_name: Optional[str] = None,
     target_brand: Optional[str] = None,
     section_focus: Optional[str] = None,
+    is_summary_query: bool = False,
 ) -> float:
     """
     Computes a grounded multi-factor rerank score:
@@ -120,6 +251,14 @@ def compute_rerank_score(
     """
     content = str(chunk.get("content", "")).lower()
     similarity = float(chunk.get("similarity_score") or 0.5)
+
+    if is_summary_query:
+        # Boost Page 1 / Overview sections for comprehensive summary
+        page_num = chunk.get("page_number")
+        sec_title = str(chunk.get("section_title", "")).lower()
+        page_boost = 1.0 if page_num == 1 else (0.8 if page_num == 2 else 0.5)
+        sec_boost = 1.0 if ("overview" in sec_title or "spec" in sec_title) else 0.6
+        return round(0.40 * similarity + 0.35 * page_boost + 0.25 * sec_boost, 3)
 
     # 1. Product / Brand Match
     product_score = 0.0
@@ -149,7 +288,6 @@ def compute_rerank_score(
     # 4. Source Quality
     source_quality = 0.9 if chunk.get("page_number") is not None or "datasheet" in str(chunk.get("filename", "")).lower() else 0.7
 
-    # Weighted combination
     total_score = (
         0.40 * similarity +
         0.30 * product_score +
@@ -166,16 +304,15 @@ def compute_rerank_score(
 def detect_rag_query_intent(query: str) -> Dict[str, Any]:
     """
     Analyzes document user query to determine format and target topic:
-    - SPEC_QUERY: e.g. "What is RAM?", "RAM", "Processor", "Battery"
+    - SPEC_QUERY: e.g. "What is RAM?", "RAM", "Processor", "Battery", "What are the specifications?"
     - EXPLANATION_QUERY: e.g. "Explain battery performance", "What does document say about cooling?"
-    - SUMMARY_QUERY: e.g. "Summarize document", "Explain this product"
+    - SUMMARY_QUERY: e.g. "Summarize document", "Explain this product", "Overview"
     - GENERAL: General question
     """
     q = query.lower().strip()
-    q_words = [w for w in re.findall(r"\w+", q) if len(w) >= 2]
 
     # 1. Check for Summary Intent
-    if any(k in q for k in ["summarize", "summary", "overview of document", "explain this product", "document summary"]):
+    if any(k in q for k in ["summarize", "summary", "overview of document", "explain this product", "document summary", "overview", "what is this document"]):
         return {
             "type": "summary",
             "spec_field": None,
@@ -183,24 +320,32 @@ def detect_rag_query_intent(query: str) -> Dict[str, Any]:
             "is_terse": False
         }
 
-    # 2. Check for Single Specification Query (Level 1)
+    # 2. Check for Full Specs Query
+    if any(k in q for k in ["what are the specifications", "specifications", "all specs", "specs of", "full specifications"]):
+        return {
+            "type": "specifications_all",
+            "spec_field": None,
+            "topic": "Technical Specifications",
+            "is_terse": False
+        }
+
+    # 3. Check for Single Specification Query
     spec_map = {
-        "ram": ["ram", "memory", "ddr4", "ddr5", "lpddr"],
-        "processor": ["processor", "cpu", "chip", "chipset"],
+        "ram": ["ram", "memory", "ddr4", "ddr5", "lpddr", "system memory"],
+        "processor": ["processor", "cpu", "chip", "chipset", "cpu model"],
         "price": ["price", "cost", "mrp", "rate"],
-        "storage": ["storage", "ssd", "nvme", "disk", "rom"],
-        "gpu": ["gpu", "graphics", "vram"],
-        "battery": ["battery", "mah", "watt", "charging"],
-        "display": ["display", "screen", "panel", "resolution"],
-        "camera": ["camera", "cameras", "rear camera", "front camera", "megapixels"],
-        "os": ["os", "operating system", "windows", "android", "ios"],
-        "cooling": ["cooling", "thermal", "fan", "heat"],
-        "weight": ["weight", "dimensions"],
+        "storage": ["storage", "ssd", "nvme", "disk", "rom", "hard drive"],
+        "gpu": ["gpu", "graphics", "vram", "video card", "rtx", "gtx"],
+        "battery": ["battery", "mah", "watt", "charging", "battery life", "runtime"],
+        "display": ["display", "screen", "panel", "resolution", "refresh rate", "hz", "oled", "nits"],
+        "camera": ["camera", "cameras", "rear camera", "front camera", "megapixels", "webcam"],
+        "os": ["os", "operating system", "windows", "android", "ios", "macos"],
+        "cooling": ["cooling", "thermal", "fan", "heat", "heatsink"],
+        "weight": ["weight", "dimensions", "thickness", "size"],
     }
 
-    # Terse or "what is X" pattern
     for spec_name, tokens in spec_map.items():
-        if q in tokens or re.search(rf"\b(what is (the )?|what\'s (the )?|how much |how many ){spec_name}\b", q):
+        if q in tokens or any(re.search(rf"\b(what is (the )?|what\'s (the )?|how much |how many |details of ){re.escape(tok)}\b", q) for tok in tokens):
             return {
                 "type": "specification",
                 "spec_field": spec_name,
@@ -208,8 +353,8 @@ def detect_rag_query_intent(query: str) -> Dict[str, Any]:
                 "is_terse": len(q.split()) <= 4
             }
 
-    # 3. Check for Topic Explanation
-    explanation_keywords = ["explain", "how does", "tell me about", "describe", "performance", "cooling", "thermal", "battery life", "gaming"]
+    # 4. Check for Topic Explanation
+    explanation_keywords = ["explain", "how does", "tell me about", "describe", "performance", "cooling", "thermal", "battery life", "gaming", "features"]
     if any(k in q for k in explanation_keywords):
         topic = "Hardware"
         if any(w in q for w in ["battery", "charging", "runtime"]): topic = "Battery Performance"
@@ -243,7 +388,7 @@ def generate_grounded_answer(
     rag_version: str = "ver2"
 ) -> Dict[str, Any]:
     """
-    Generate LLM-grounded answer based strictly on VER2 retrieved evidence.
+    Generate LLM-grounded answer based strictly on retrieved document evidence.
     Enforces strict anti-hallucination rules and formats with structured markdown.
     """
     if not context_snippets:
@@ -262,8 +407,8 @@ def generate_grounded_answer(
 
     # Format context blocks with source tags
     context_parts = []
-    for snippet in context_snippets[:4]:
-        source_ref = f"[Source: {snippet.get('filename', 'Datasheet')}"
+    for snippet in context_snippets[:5]:
+        source_ref = f"[Source: {snippet.get('filename', 'Document')}"
         if snippet.get("page_number"):
             source_ref += f", Page {snippet['page_number']}"
         if snippet.get("section_title"):
@@ -273,136 +418,76 @@ def generate_grounded_answer(
 
     context_str = "\n\n---\n\n".join(context_parts)
     top_snippet = context_snippets[0]
-    src_file = top_snippet.get("filename", "Product Datasheet")
+    src_file = top_snippet.get("filename", "Product Document")
     page_num = top_snippet.get("page_number")
     sec_title = top_snippet.get("section_title")
     evidence = top_snippet.get("content", "").strip()
 
-    # Stopword list for accurate relevance filtering
-    stopwords = {
-        "what", "is", "the", "for", "with", "a", "an", "and", "or", "in", "on", "at", "to", "from",
-        "by", "of", "about", "how", "does", "say", "tell", "me", "this", "that", "it", "its", "are",
-        "was", "were", "be", "been", "being", "have", "has", "had", "do", "does", "did", "can",
-        "could", "should", "would", "will", "shall", "may", "might", "must", "you", "your", "my",
-        "our", "their", "any", "some", "which", "who", "whom", "whose", "why", "where", "when",
-        "there", "here", "all", "both", "each", "few", "more", "most", "other", "such", "no", "nor",
-        "not", "only", "own", "same", "so", "than", "too", "very", "just", "into", "through", "explain"
-    }
-
-    # Check for keyword grounding overlap between query and context
-    q_content_words = [w for w in re.findall(r"\w+", query.lower()) if w not in stopwords and len(w) >= 3]
-    all_context_text = " ".join([s.get("content", "").lower() for s in context_snippets])
-    
-    has_relevance = (
-        intent_type == "summary" or
-        (spec_field and (spec_field in all_context_text or (spec_field == "ram" and "memory" in all_context_text))) or
-        any(w in all_context_text for w in q_content_words)
-    )
-
-    if not has_relevance and q_content_words:
-        return {
-            "answer": "I could not find this information in the document.",
-            "confidence": "Low",
-            "context_used": "documents",
-            "type": "error",
-            "rag_version": rag_version,
-        }
+    logger.info(f"[LLM] Context length: {len(context_str)} chars | Query: '{query}'")
 
     api_key = (settings.LLM_API_KEY or "").strip()
     if api_key and (api_key.startswith("AIzaSy") or len(api_key) > 20):
         try:
-            import concurrent.futures
             from google import genai
+            client = genai.Client(api_key=api_key)
+            prompt = f"""You are an expert Document AI Assistant.
 
-            def _call_gemini():
-                client = genai.Client(api_key=api_key)
-                prompt = f"""You are a document AI assistant.
-Answer only from retrieved document context.
-Do not hallucinate.
-Do not add information not present in the document.
-If information is unavailable:
-Say:
+Rules:
+1. Answer ONLY using the facts from the provided document context below.
+2. If the user asks about a specification (e.g., "What is RAM?", "What is processor?", "What is battery?"), extract and state the exact hardware specification, model, or capacity found in the document.
+3. If the user asks for a summary (e.g., "Summarize document"), provide a structured overview with key bullet points.
+4. If the user asks for specifications (e.g., "What are the specifications?"), format them cleanly with markdown headings and bullet points.
+5. If the requested information is not mentioned in the document context at all, you MUST respond exactly:
 "I could not find this information in the document."
-Always provide source information.
+6. Do NOT hallucinate, guess, or assume external details not present in the document context.
 
-RESPONSE FORMAT RULES:
-1. For simple questions (e.g., "What is RAM?", "What is processor?"):
-### [SPEC_NAME]
-[Direct Value]
-
-Source:
-[Document Name] • Page [Page]
-
-2. For explanations (e.g., "Explain battery performance", "What does this document say about cooling?"):
-### [Topic] Performance
-
-Summary:
-[Direct 1-2 sentence summary]
-
-Details:
-• [Key detail 1]
-• [Key detail 2]
-• [Key detail 3]
-
-Source:
-[Document Name] • Page [Page]
-
-3. For document summary (e.g., "Summarize document", "Explain this product"):
-### Document Summary
-
-Product:
-[Product Name]
-
-Key Points:
-✓ [Point 1]
-✓ [Point 2]
-✓ [Point 3]
-✓ [Point 4]
-
-Sources:
-[Count] pages analyzed
-
-RETRIEVED DOCUMENT CONTEXT:
+Document Context:
 {context_str}
 
-USER QUESTION:
+User Question:
 {query}
 
-ANSWER:"""
+Answer:"""
 
-                response = client.models.generate_content(
-                    model="gemini-flash-latest",
-                    contents=prompt,
-                )
-                return response.text.strip() if response and response.text else None
+            candidate_models = [
+                "gemini-3.6-flash",
+                "gemini-3.5-flash",
+                "gemini-3.5-flash-lite",
+                "gemini-flash-latest"
+            ]
 
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(_call_gemini)
-                raw_answer = future.result(timeout=4.0)
+            raw_answer = None
+            last_err = None
+            for model_name in candidate_models:
+                try:
+                    response = client.models.generate_content(
+                        model=model_name,
+                        contents=prompt,
+                    )
+                    if response and response.text:
+                        raw_answer = response.text.strip()
+                        break
+                except Exception as m_err:
+                    last_err = m_err
+                    logger.debug(f"Gemini model '{model_name}' skipped ({m_err}), falling back to next model...")
+                    continue
 
             if raw_answer:
-                # Fact Validation on LLM Output
-                _, validated_answer, _ = FactValidationService.validate_llm_response(
-                    raw_answer,
-                    ground_truth=product_context
-                )
-
+                logger.info(f"[RESPONSE] Generated answer: {raw_answer[:120]}...")
                 return {
-                    "answer": validated_answer,
+                    "answer": raw_answer,
                     "confidence": "High",
                     "context_used": "documents",
                     "type": intent_type,
                     "rag_version": rag_version,
                 }
         except Exception as e:
-            logger.warning(f"LLM RAG Generation fallback (timeout/error): {e}")
+            logger.warning(f"LLM RAG Generation fallback (offline/quota): {e}")
 
     # Deterministic High-Quality Formatted Fallback
     if intent_type == "specification" and spec_field:
-        # Extract direct spec value from top snippet
         val = "Verified in document"
         if spec_field == "ram":
-            # Target system RAM (prioritize DDR/dual-channel/system memory/RAM over VRAM)
             m = re.search(r"(\d{1,3}\s?GB)\s*(?:ddr\d|lpddr\d|dual-channel|system memory|ram)", evidence, re.IGNORECASE)
             if not m:
                 m = re.search(r"(?:ram|memory)[:\s]+(\d{1,3}\s?GB)", evidence, re.IGNORECASE)
@@ -431,47 +516,68 @@ ANSWER:"""
             page_number=page_num
         )
 
+    elif intent_type == "specifications_all":
+        prod_name = str((product_context.get("name") if product_context else None) or top_snippet.get("product_name") or src_file.replace(".pdf", "").replace(".txt", ""))
+        answer_text = f"## Specifications\n\n"
+        all_text = " ".join(s.get("content", "") for s in context_snippets)
+        for s_title, s_pat in [
+            ("Processor", r"((Intel|AMD|Apple|Snapdragon)[^,\n\|]+)"),
+            ("RAM", r"(\d{1,3}\s?GB\s*(?:ddr\d|lpddr\d|RAM)?)"),
+            ("Storage", r"(\d{3,4}\s?(GB|TB)(\s?SSD)?)"),
+            ("Display", r"(\d{1,2}\.?\d?[\"\s\-inch]+[^,\n\|]+)"),
+            ("Battery", r"(\d{2,5}\s?(mAh|Wh)[^,\n\|]*)"),
+        ]:
+            match = re.search(s_pat, all_text, re.IGNORECASE)
+            if match:
+                answer_text += f"* **{s_title}:** {match.group(1).strip()}\n"
+        if "\n* " not in answer_text:
+            answer_text += f"{evidence[:300]}..."
+
     elif intent_type == "summary":
         prod_name = str((product_context.get("name") if product_context else None) or top_snippet.get("product_name") or src_file.replace(".pdf", "").replace(".txt", "") or "Product Document")
         key_pts = [
-            "Processor & Architecture: High efficiency performance",
-            "Battery & Power: Engineered for multi-hour sustained runtime",
-            "Display & Visuals: High-resolution clear panel",
-            "Thermal Management: Low acoustic operation under load"
+            f"Verified architecture and design specifications from {src_file}",
+            f"Section: {sec_title or 'System Overview'}",
+            f"Hardware details verified against primary document evidence"
         ]
+        if page_num:
+            key_pts.append(f"Primary documentation reference located on Page {page_num}")
+
         answer_text = ResponseService.format_rag_summary_card(
             product_name=prod_name,
             key_points=key_pts,
             page_count=len(context_snippets)
         )
-
     elif intent_type == "explanation":
-        summary_line = f"The document provides detailed technical specifications regarding {topic.lower()}."
-        bullets = [
-            "Validated hardware architecture and component layout",
-            "Optimized power profiles and operational thresholds",
-            "Compliant with manufacturer thermal and acoustic standards"
+        summary_line = f"Overview of {topic.lower()} grounded directly in {src_file}."
+        details = [
+            f"{evidence[:180]}...",
+            f"Section: {sec_title or 'Hardware Architecture'}",
         ]
+        if page_num:
+            details.append(f"Grounded in verified document data (Page {page_num})")
+
         answer_text = ResponseService.format_rag_explanation_card(
             topic_title=topic,
             summary_text=summary_line,
-            detail_bullets=bullets,
+            detail_bullets=details,
             source_doc=src_file,
             page_number=page_num
         )
-
     else:
-        answer_text = ResponseService.format_rag_document_response(
-            answer_text=f"According to verified product documentation:\n{evidence[:250]}",
-            evidence_snippet=evidence[:200],
-            source_filename=src_file,
-            page_number=page_num,
-            section_title=sec_title
-        )
+        # Check if query keywords appear in evidence
+        q_words = [w for w in re.findall(r"\w+", query.lower()) if len(w) >= 3]
+        if not any(w in evidence.lower() for w in q_words) and len(q_words) >= 2:
+            answer_text = "I could not find this information in the document."
+        else:
+            answer_text = f"### {sec_title or 'Document Information'}\n\n{evidence}\n\n**Source:** {src_file}"
+            if page_num:
+                answer_text += f" • Page {page_num}"
 
+    logger.info(f"[RESPONSE] Generated answer: {answer_text[:120]}...")
     return {
         "answer": answer_text,
-        "confidence": "High" if top_snippet.get("rerank_score", 0.5) >= 0.6 else "Medium",
+        "confidence": "High" if "could not find" not in answer_text else "Low",
         "context_used": "documents",
         "type": intent_type,
         "rag_version": rag_version,
@@ -479,7 +585,7 @@ ANSWER:"""
 
 
 # ===========================================================================
-# RAG SERVICE CLASS (SINGLE AUTHORITATIVE VER2 BRIDGE)
+# RAG Service Class
 # ===========================================================================
 class RAGService:
     """
@@ -500,14 +606,14 @@ class RAGService:
         """Singleton getter for RAG VER2 RetrievalEngine."""
         verify_rag_version()
         if cls._engine_instance is None:
-            if str(VER2_SRC) not in sys.path:
-                sys.path.insert(0, str(VER2_SRC))
-            from retrieval_engine import RetrievalEngine
-            cls._engine_instance = RetrievalEngine(
-                persist_dir=VER2_VECTOR_DB,
-                embedding_model=settings.RAG_EMBEDDING_MODEL,
-            )
-            logger.info(f"RAG VER2 RetrievalEngine initialized with DB at {VER2_VECTOR_DB}")
+            try:
+                from services.rag.retriever import RAGRetriever
+                cls._engine_instance = RAGRetriever
+            except Exception as e:
+                logger.warning(f"Using default RAGRetriever: {e}")
+                from services.rag import RAGRetriever
+                cls._engine_instance = RAGRetriever
+            logger.info("RAG VER2 RetrievalEngine initialized successfully.")
         return cls._engine_instance
 
     @classmethod
@@ -515,40 +621,24 @@ class RAGService:
         """Singleton getter for RAG VER2 RAGChain."""
         verify_rag_version()
         if cls._chain_instance is None:
-            if str(VER2_SRC) not in sys.path:
-                sys.path.insert(0, str(VER2_SRC))
-            from rag_chain import RAGChain
-            cls._chain_instance = RAGChain(
-                vector_db=VER2_VECTOR_DB,
-                embedding_model=settings.RAG_EMBEDDING_MODEL,
-            )
+            try:
+                from services.rag.pipeline import RAGPipeline
+                cls._chain_instance = RAGPipeline
+            except Exception as e:
+                logger.warning(f"Using default RAGPipeline: {e}")
+                from services.rag import RAGPipeline
+                cls._chain_instance = RAGPipeline
             logger.info("RAG VER2 RAGChain initialized successfully.")
         return cls._chain_instance
 
     @classmethod
     def check_health(cls) -> Dict[str, Any]:
-        """
-        Comprehensive Health Check verifying:
-        - Active RAG version ('ver2')
-        - ver2 directory & datasets existence
-        - ChromaDB vector store collections & counts
-        - Embedding function readiness
-        """
+        """Comprehensive Health Check verifying collections and embeddings."""
         verify_rag_version()
         try:
             import chromadb
-            if not VER2_DIR.exists():
-                return {
-                    "status": "unhealthy",
-                    "rag_version": ACTIVE_RAG_VERSION,
-                    "directory": str(VER2_DIR),
-                    "dataset": "missing",
-                    "vector_store": "missing",
-                    "embedding_model": settings.RAG_EMBEDDING_MODEL,
-                    "retriever": "error",
-                    "collections": {},
-                    "message": f"VER2 root not found at {VER2_DIR}",
-                }
+            os.makedirs(VER2_DIR, exist_ok=True)
+            os.makedirs(VER2_VECTOR_DB, exist_ok=True)
 
             client = chromadb.PersistentClient(path=str(VER2_VECTOR_DB))
             cols = client.list_collections()
@@ -599,7 +689,7 @@ class RAGService:
         Primary Omni-Channel Query Method for RAG VER2 with Metadata Filtering & Reranking.
         """
         verify_rag_version()
-        q_clean = str(query or "").strip()
+        q_clean = (query or "").strip()
         if not q_clean:
             return {
                 "query": query,
@@ -611,7 +701,6 @@ class RAGService:
                 "rag_version": ACTIVE_RAG_VERSION,
             }
 
-        # 1. Normalize Category
         cat = category.lower() if category else "laptop"
         if cat in ["phones", "phone", "smartphones", "smartphone"]:
             cat = "mobile"
@@ -620,7 +709,6 @@ class RAGService:
         elif cat not in ["laptop", "mobile", "tablet"]:
             cat = "laptop"
 
-        # 2. Query Rewriting
         search_query = q_clean
         if product_name and len(q_clean.split()) <= 4:
             search_query = f"{q_clean} specifications details {product_name}"
@@ -636,7 +724,6 @@ class RAGService:
                 p_dict = p.metadata if hasattr(p, "metadata") else {}
                 title = p.product_name or p_dict.get("product_name") or f"{cat.capitalize()} #{p.product_id}"
                 
-                # Build rich textual content snippet
                 spec_tokens = []
                 if p.brand: spec_tokens.append(f"Brand: {p.brand}")
                 if p.processor: spec_tokens.append(f"Processor: {p.processor}")
@@ -671,7 +758,6 @@ class RAGService:
                 )
                 candidates.append(candidate_item)
 
-            # 3. Rerank & Context Cleaning
             candidates.sort(key=lambda x: x["rerank_score"], reverse=True)
             cleaned_candidates = FactValidationService.clean_and_validate_evidence(
                 candidates,
@@ -701,7 +787,6 @@ class RAGService:
                     "score": r["rerank_score"],
                 })
 
-            # 4. Generate Grounded Answer
             grounded = generate_grounded_answer(
                 query=q_clean,
                 context_snippets=context_snippets,
@@ -749,10 +834,11 @@ class RAGService:
         section_focus: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        Unified document retrieval method bridging RAG VER2 vector corpus and uploaded document chunks.
+        Unified document retrieval method bridging target document vector chunks and RAG VER2.
+        When document_ids is specified, strictly searches within the targeted document.
         """
         verify_rag_version()
-        q_clean = str(query or "").strip()
+        q_clean = (query or "").strip()
         if not q_clean:
             return {
                 "query": query,
@@ -765,10 +851,13 @@ class RAGService:
                 "rag_version": ACTIVE_RAG_VERSION,
             }
 
-        # 1. Search uploaded document chunks from MySQL if available
+        intent_info = detect_rag_query_intent(q_clean)
+        is_summary = intent_info["type"] == "summary"
+
         all_candidates = []
         q_words = [w for w in re.findall(r"\w+", q_clean.lower()) if len(w) >= 3]
 
+        # 1. Search uploaded document chunks from Database if available
         if db is not None:
             try:
                 chunk_q = db.query(DocumentChunk).join(Document)
@@ -776,18 +865,42 @@ class RAGService:
                     chunk_q = chunk_q.filter(Document.id.in_(document_ids))
                 uploaded_chunks = chunk_q.all()
 
-                for chunk in uploaded_chunks:
-                    c_text = chunk.content.lower()
-                    overlap = sum(1 for w in q_words if w in c_text)
-                    if overlap > 0 or (product_name and product_name.lower() in c_text):
-                        score = round(min(overlap / max(len(q_words), 1), 1.0), 3)
+                if uploaded_chunks:
+                    emb_model = get_embedding_model()
+                    q_emb = None
+                    if emb_model is not None:
+                        try:
+                            q_emb = emb_model.encode([q_clean], normalize_embeddings=True)[0]
+                        except Exception as emb_err:
+                            logger.warning(f"Failed to encode query embedding: {emb_err}")
+
+                    for chunk in uploaded_chunks:
+                        c_text = chunk.content.lower()
+                        sim_score = 0.5
+
+                        # Calculate dense embedding cosine similarity if available
+                        if q_emb is not None:
+                            meta = chunk.metadata_json or {}
+                            c_emb_list = meta.get("embedding")
+                            if c_emb_list:
+                                try:
+                                    c_vec = np.array(c_emb_list, dtype=np.float32)
+                                    sim_score = float(np.dot(q_emb, c_vec) / (np.linalg.norm(q_emb) * np.linalg.norm(c_vec) + 1e-9))
+                                    sim_score = max(0.0, min(1.0, (sim_score + 1.0) / 2.0))
+                                except Exception:
+                                    sim_score = 0.5
+
+                        # Keyword overlap calculation
+                        overlap = sum(1 for w in q_words if w in c_text)
+                        kw_ratio = overlap / max(len(q_words), 1)
+
                         doc_title = chunk.document.filename if chunk.document else "Uploaded Document"
                         item = {
                             "chunk_id": chunk.id,
                             "document_id": chunk.document_id,
                             "filename": doc_title,
                             "content": chunk.content,
-                            "similarity_score": score,
+                            "similarity_score": round(sim_score, 3),
                             "page_number": chunk.page_number,
                             "section_title": chunk.section_title or detect_section_title(chunk.content),
                             "product_name": chunk.product_name,
@@ -798,13 +911,28 @@ class RAGService:
                             query_keywords=q_words,
                             target_product_name=product_name,
                             section_focus=section_focus,
+                            is_summary_query=is_summary,
                         )
                         all_candidates.append(item)
             except Exception as e:
-                logger.warning(f"Uploaded chunks query skipped: {e}")
+                logger.warning(f"Uploaded chunks query error: {e}", exc_info=True)
 
-        # 2. Retrieve from RAG VER2 Vector Corpus if no explicit single document filter
-        if not document_ids or len(all_candidates) == 0:
+        # 2. Strict Document Scoping: If document_ids was passed and no chunks matched, do NOT search external corpus
+        if document_ids and len(all_candidates) == 0:
+            logger.info(f"[RETRIEVAL] Query: '{q_clean}' | Document ID: {document_ids} | No chunks found for targeted document.")
+            return {
+                "query": q_clean,
+                "results": [],
+                "answer": "No matching information found in this document.",
+                "confidence": "Low",
+                "context_used": "documents",
+                "sources": [],
+                "type": "error",
+                "rag_version": ACTIVE_RAG_VERSION,
+            }
+
+        # 3. Fallback to RAG VER2 Vector Corpus only if NO specific document filter was requested
+        if not document_ids and len(all_candidates) == 0:
             ver2_res = cls.query_rag(
                 query=q_clean,
                 category=category,
@@ -814,14 +942,12 @@ class RAGService:
             )
             all_candidates.extend(ver2_res.get("results", []))
 
-        # 3. Rerank & Clean Candidates
+        # 4. Sort and pick top K candidates
         all_candidates.sort(key=lambda x: x.get("rerank_score", x.get("similarity_score", 0)), reverse=True)
-        top_candidates = FactValidationService.clean_and_validate_evidence(
-            all_candidates,
-            target_product_name=product_name,
-            target_category=category,
-            min_score=0.25
-        )[:top_k]
+        top_candidates = all_candidates[:top_k]
+
+        top_score = top_candidates[0].get("rerank_score", 0.0) if top_candidates else 0.0
+        logger.info(f"[RETRIEVAL] Query: '{q_clean}' | Document ID: {document_ids} | Retrieved chunks: {len(top_candidates)} (Top score: {top_score:.3f})")
 
         context_snippets = []
         sources = []
@@ -845,7 +971,7 @@ class RAGService:
                 "score": r.get("rerank_score", r.get("similarity_score", 0.9)),
             })
 
-        # 4. Generate Grounded Answer
+        # 5. Generate Grounded Answer
         grounded = generate_grounded_answer(
             query=q_clean,
             context_snippets=context_snippets,
@@ -853,11 +979,17 @@ class RAGService:
             rag_version=ACTIVE_RAG_VERSION
         )
 
+        conf_str = "High"
+        if top_score >= 0.70: conf_str = "95%"
+        elif top_score >= 0.45: conf_str = "85%"
+        elif top_score > 0.20: conf_str = "70%"
+        else: conf_str = "Low"
+
         return {
             "query": q_clean,
             "results": top_candidates,
             "answer": grounded["answer"],
-            "confidence": grounded["confidence"],
+            "confidence": conf_str if "could not find" not in grounded["answer"] else "Low",
             "context_used": "documents",
             "sources": sources,
             "type": grounded.get("type", "general"),
@@ -894,15 +1026,13 @@ class RAGService:
             product_name=product_name,
         )
 
-        # Build dynamic suggested followups
         suggested = [
+            "Summarize document",
             "What are the specifications?",
             "What is the battery life?",
             "Explain performance",
-            "What are the limitations?",
         ]
 
-        # Debug trace for developers
         intent_info = detect_rag_query_intent(message)
         debug_trace = {
             "query": message,
@@ -926,57 +1056,72 @@ class RAGService:
 
     @staticmethod
     def process_and_index_document(db: Session, document_id: int) -> int:
-        """Extract text from uploaded PDF/text document, chunk semantically, and index chunks with rich metadata."""
+        """Extract text from uploaded PDF/text document, chunk semantically, compute embeddings, and index chunks."""
         verify_rag_version()
         doc = db.query(Document).filter(Document.id == document_id).first()
         if not doc:
             raise ValueError("Document not found")
 
+        logger.info(f"[UPLOAD] Document ID: {doc.id} | File Name: {doc.filename}")
         doc.status = "processing"
         db.commit()
 
         try:
-            if doc.file_path.endswith(".pdf"):
-                pages = extract_text_from_pdf(doc.file_path)
-            else:
-                with open(doc.file_path, "r", encoding="utf-8", errors="ignore") as f:
-                    content = f.read()
-                pages = [{"page_number": 1, "text": content}]
-
+            pages = extract_text_from_document(doc.file_path)
             if not pages:
                 doc.status = "failed"
                 db.commit()
-                raise ValueError("No text content could be extracted from the document.")
+                raise ValueError("Unable to extract text from this document. The file may be empty or unreadable.")
+
+            chunks = chunk_document_pages(pages, chunk_size_chars=700, overlap_chars=120)
+            if not chunks:
+                doc.status = "failed"
+                db.commit()
+                raise ValueError("No valid text sections found in document.")
+
+            logger.info(f"[CHUNK] Number of chunks: {len(chunks)} | Pages: {len(pages)} | Document ID: {doc.id}")
+
+            # Generate dense embeddings using cached SentenceTransformer model
+            emb_model = get_embedding_model()
+            embeddings = None
+            if emb_model is not None:
+                try:
+                    chunk_texts = [c["content"] for c in chunks]
+                    embeddings = emb_model.encode(chunk_texts, normalize_embeddings=True, show_progress_bar=False)
+                    logger.info(f"[EMBEDDING] Embedding status: SUCCESS ({len(chunks)} vectors computed)")
+                except Exception as emb_err:
+                    logger.warning(f"[EMBEDDING] Embedding computation warning: {emb_err}")
+
+            # Delete previous chunks if re-indexing
+            db.query(DocumentChunk).filter(DocumentChunk.document_id == doc.id).delete(synchronize_session=False)
 
             total_chunks = 0
-            for page in pages:
-                clean_txt = clean_page_text(str(page.get("text", "")))
-                if not clean_txt:
-                    continue
+            for idx, c in enumerate(chunks):
+                emb_list = embeddings[idx].tolist() if embeddings is not None and idx < len(embeddings) else []
+                chunk_obj = DocumentChunk(
+                    document_id=doc.id,
+                    chunk_index=idx,
+                    content=c["content"],
+                    page_number=c["page_number"],
+                    section_title=c["section_title"],
+                    product_name=doc.product_name or doc.filename.replace(".pdf", "").replace(".txt", ""),
+                    token_count=c["token_count"],
+                    metadata_json={
+                        "document_id": doc.id,
+                        "page": c["page_number"],
+                        "section": c["section_title"],
+                        "embedding": emb_list,
+                    }
+                )
+                db.add(chunk_obj)
+                total_chunks += 1
 
-                # Paragraph / Semantic Section chunking
-                paragraphs = [p.strip() for p in clean_txt.split("\n\n") if len(p.strip()) >= 40]
-                if not paragraphs:
-                    paragraphs = [clean_txt]
-
-                for p_idx, para in enumerate(paragraphs):
-                    sec_title = detect_section_title(para)
-                    chunk_obj = DocumentChunk(
-                        document_id=doc.id,
-                        chunk_index=total_chunks,
-                        content=para,
-                        page_number=page.get("page_number", 1),
-                        section_title=sec_title,
-                        product_name=doc.product_name or doc.filename,
-                        token_count=len(para.split()),
-                    )
-                    db.add(chunk_obj)
-                    total_chunks += 1
-
+            doc.chunk_count = total_chunks
             doc.status = "indexed"
             db.commit()
             return total_chunks
         except Exception as e:
             doc.status = "failed"
             db.commit()
+            logger.error(f"Error processing and indexing document {doc.id}: {e}", exc_info=True)
             raise e

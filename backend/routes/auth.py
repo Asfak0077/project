@@ -18,6 +18,7 @@ from schemas.auth import (
     SetPasswordRequest,
 )
 from services.auth_service import hash_password, verify_password, create_access_token
+from services.notification_service import NotificationService
 from utils.security import get_current_user
 from utils.config import settings
 
@@ -27,33 +28,40 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 def _build_token_response(user: User) -> TokenResponse:
     """Helper to construct standardized TokenResponse with nested user object."""
-    role_str = "admin" if user.is_admin else "user"
+    uid = int(getattr(user, "id", 0))
+    uemail = str(getattr(user, "email", ""))
+    uname = str(getattr(user, "name", ""))
+    uadmin = bool(getattr(user, "is_admin", False))
+    uavatar = getattr(user, "avatar", None)
+    uauth = str(getattr(user, "auth_provider", "local") or "local")
+    role_str = "admin" if uadmin else "user"
+
     token = create_access_token(
-        user_id=user.id,
-        email=user.email,
+        user_id=uid,
+        email=uemail,
         role=role_str,
-        is_admin=user.is_admin
+        is_admin=uadmin
     )
 
     user_info = UserAuthInfo(
-        id=user.id,
-        name=user.name,
-        email=user.email,
+        id=uid,
+        name=uname,
+        email=uemail,
         role=role_str,
-        avatar=user.avatar,
-        profile_image=user.avatar,
-        auth_provider=user.auth_provider or "local"
+        avatar=uavatar,
+        profile_image=uavatar,
+        auth_provider=uauth
     )
 
     return TokenResponse(
         token=token,
         access_token=token,
         token_type="bearer",
-        user_id=user.id,
-        name=user.name,
-        email=user.email,
+        user_id=uid,
+        name=uname,
+        email=uemail,
         role=role_str,
-        avatar=user.avatar,
+        avatar=uavatar,
         user=user_info
     )
 
@@ -125,6 +133,13 @@ def register(data: UserRegisterRequest, db: Session = Depends(get_db)):
     db.refresh(new_user)
 
     logger.info(f"Registered new local user #{new_user.id} ({new_user.email})")
+    NotificationService.create_notification(
+        db=db,
+        user_id=new_user.id,
+        title="Welcome to VersusAI",
+        message=f"Welcome {new_user.name}! Your account is now active and ready.",
+        type="AUTH",
+    )
     return _build_token_response(new_user)
 
 
@@ -162,6 +177,13 @@ def login(data: UserLoginRequest, db: Session = Depends(get_db)):
         )
 
     logger.info(f"User #{user.id} ({user.email}) logged in successfully via local credentials.")
+    NotificationService.create_notification(
+        db=db,
+        user_id=user.id,
+        title="Login Successful",
+        message=f"Welcome back, {user.name}!",
+        type="AUTH",
+    )
     return _build_token_response(user)
 
 
@@ -290,20 +312,34 @@ def google_login(data: GoogleAuthRequest, db: Session = Depends(get_db)):
         db.refresh(user)
         logger.info(f"Created new Google user #{user.id} ({user.email})")
 
+    NotificationService.create_notification(
+        db=db,
+        user_id=user.id,
+        title="Google Login Successful",
+        message=f"Your Google account ({user.email}) has been connected successfully.",
+        type="AUTH",
+    )
     return _build_token_response(user)
 
 
 @router.get("/me", response_model=UserAuthInfo)
 def get_current_auth_user(current_user: User = Depends(get_current_user)):
     """Get current authenticated user info."""
+    uid = int(getattr(current_user, "id", 0))
+    uname = str(getattr(current_user, "name", ""))
+    uemail = str(getattr(current_user, "email", ""))
+    uadmin = bool(getattr(current_user, "is_admin", False))
+    uavatar = getattr(current_user, "avatar", None)
+    uauth = str(getattr(current_user, "auth_provider", "local") or "local")
+
     return UserAuthInfo(
-        id=current_user.id,
-        name=current_user.name,
-        email=current_user.email,
-        role="admin" if current_user.is_admin else "user",
-        avatar=current_user.avatar,
-        profile_image=current_user.avatar,
-        auth_provider=current_user.auth_provider or "local"
+        id=uid,
+        name=uname,
+        email=uemail,
+        role="admin" if uadmin else "user",
+        avatar=uavatar,
+        profile_image=uavatar,
+        auth_provider=uauth
     )
 
 
@@ -329,19 +365,28 @@ def set_password(
             detail="Password must be at least 6 characters long."
         )
 
-    current_user.password_hash = hash_password(data.new_password)
-    if current_user.auth_provider == "google":
-        current_user.auth_provider = "local+google"
-    elif not current_user.auth_provider:
-        current_user.auth_provider = "local"
+    setattr(current_user, "password_hash", hash_password(data.new_password))
+    curr_auth = getattr(current_user, "auth_provider", None)
+    if curr_auth == "google":
+        setattr(current_user, "auth_provider", "local+google")
+    elif not curr_auth:
+        setattr(current_user, "auth_provider", "local")
 
     db.commit()
     db.refresh(current_user)
-    logger.info(f"Password set for user #{current_user.id} ({current_user.email}). Provider is now {current_user.auth_provider}")
+    logger.info(f"Password set for user #{getattr(current_user, 'id', 'unknown')}. Provider is now {getattr(current_user, 'auth_provider', 'local')}")
+
+    NotificationService.create_notification(
+        db=db,
+        user_id=current_user.id,
+        title="Password Updated",
+        message="Your account password was updated successfully.",
+        type="AUTH",
+    )
 
     return {
         "message": "Password successfully created. You can now log in using either Email + Password or Google Login.",
-        "auth_provider": current_user.auth_provider
+        "auth_provider": getattr(current_user, "auth_provider", "local")
     }
 
 
@@ -358,11 +403,12 @@ def forgot_password(data: ForgotPasswordRequest, db: Session = Depends(get_db)):
     if not user:
         return {"message": "If this email is registered, a 6-digit OTP code has been generated.", "otp_sent": True}
 
+    now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
     otp_code = f"{random.randint(100000, 999999)}"
     otp_record = PasswordOTP(
         email=user.email,
         otp_code=otp_code,
-        expires_at=datetime.datetime.utcnow() + datetime.timedelta(minutes=15)
+        expires_at=now + datetime.timedelta(minutes=15)
     )
     db.add(otp_record)
     db.commit()
@@ -377,11 +423,12 @@ def forgot_password(data: ForgotPasswordRequest, db: Session = Depends(get_db)):
 @router.post("/verify-otp")
 def verify_otp(data: VerifyOTPRequest, db: Session = Depends(get_db)):
     """Verify OTP and reset password."""
+    now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
     otp = db.query(PasswordOTP).filter(
         PasswordOTP.email == data.email.lower().strip(),
         PasswordOTP.otp_code == data.otp_code.strip(),
         PasswordOTP.is_used == False,
-        PasswordOTP.expires_at > datetime.datetime.utcnow()
+        PasswordOTP.expires_at > now
     ).first()
 
     if not otp:
@@ -398,6 +445,15 @@ def verify_otp(data: VerifyOTPRequest, db: Session = Depends(get_db)):
     if user.auth_provider == "google":
         user.auth_provider = "local+google"
     otp.is_used = True
+    db.commit()
+
+    NotificationService.create_notification(
+        db=db,
+        user_id=user.id,
+        title="Password Reset Successful",
+        message="Your password was reset using a verification code.",
+        type="AUTH",
+    )
     db.commit()
 
     return {"message": "Password successfully updated. You may now log in with your new password."}

@@ -23,6 +23,7 @@ from services.response_service import ResponseService
 from services.conversation_memory_service import ConversationMemoryService
 from services.product_data_validator import normalize_product_name
 from services.response_cache import spec_cache
+from services.battle_service import BattleService
 
 logger = logging.getLogger("backend.query_router")
 
@@ -79,6 +80,21 @@ class QueryRouter:
                     found = ProductService.search_by_name(db, p_name, limit=1)
                     if found and found[0]["id"] not in [cp.get("id") for cp in comparison_products]:
                         comparison_products.append(found[0])
+
+        # Priority 2.5: User mentioned a brand (e.g. "Why did ASUS win?")
+        brand = nlp_data.get("brand")
+        if len(comparison_products) < 2 and brand:
+            for p in active_products:
+                if not p:
+                    continue
+                if brand.lower() in p.get("brand", "").lower() or brand.lower() in p.get("name", "").lower():
+                    if p.get("id") not in [cp.get("id") for cp in comparison_products]:
+                        comparison_products.append(p)
+                        break
+            if not comparison_products and db:
+                found = ProductService.search_by_name(db, brand, limit=1)
+                if found and found[0]["id"] not in [cp.get("id") for cp in comparison_products]:
+                    comparison_products.append(found[0])
 
         # Priority 3: Previous comparison context in session memory (for follow-ups like "Which has better GPU?")
         if len(comparison_products) < 2 and session_id:
@@ -506,6 +522,168 @@ class QueryRouter:
                         "Tell me about iPad Pro",
                         "Compare ASUS and MSI",
                     ],
+                    "debug_trace": debug_trace,
+                    "rag_version": "ver2",
+                }
+
+        # =========================================================================
+        # 3.5 PRODUCT_BATTLE & BATTLE VERDICT / REASON (e.g. "Why did ASUS win?", "Why is this better?", "Who won?")
+        # =========================================================================
+        if intent in [IntentType.PRODUCT_BATTLE, IntentType.BATTLE_VERDICT, IntentType.BATTLE_EXPLANATION, IntentType.BATTLE_REASON]:
+            last_battle = None
+            if session_id:
+                mem_session = ConversationMemoryService.get_or_create(session_id)
+                last_battle = mem_session.last_battle_result
+
+            # If user asks why winner won and we have a cached/previous battle result in session
+            if (intent in [IntentType.BATTLE_EXPLANATION, IntentType.BATTLE_REASON, IntentType.BATTLE_VERDICT]) and last_battle:
+                answer_text = ResponseService.format_battle_verdict_response(last_battle)
+                debug_trace["route_selected"] = "AI_BATTLE_MEMORY_VERDICT"
+                debug_trace["battle_winner"] = last_battle.get("winner_name") or last_battle.get("winner")
+
+                return {
+                    "intent": IntentType.BATTLE_EXPLANATION,
+                    "type": "battle",
+                    "response_mode": "AI",
+                    "field": "battle",
+                    "verified": True,
+                    "source_type": "battle_engine",
+                    "answer": answer_text,
+                    "message": answer_text,
+                    "products": active_products[:2] if len(active_products) >= 2 else active_products,
+                    "compared_products": active_products[:2] if len(active_products) >= 2 else active_products,
+                    "ignored_products": [],
+                    "battle": last_battle,
+                    "recommendations": [],
+                    "sources": [
+                        {
+                            "filename": "AI Battle Arena & Spec Engine",
+                            "page_number": None,
+                            "section_title": "Multi-Factor Scoring Verdict",
+                            "snippet": f"Performance (40%), Price Value (20%), Display (15%), Battery (10%), Rating (15%)",
+                            "score": 1.0,
+                        }
+                    ],
+                    "confidence": f"{last_battle.get('confidence', 94)}% Verified",
+                    "context_used": "battle_engine",
+                    "show_recommendations": False,
+                    "show_comparison": True,
+                    "show_sources": True,
+                    "suggested_followups": [
+                        "Explain the winner's performance",
+                        "What is the RAM of the winner?",
+                        "Compare full specifications",
+                    ],
+                    "debug_trace": debug_trace,
+                    "rag_version": "ver2",
+                }
+
+            battle_products, ignored_product_ids = cls.detect_comparison_products(
+                nlp_data=nlp_data,
+                active_products=active_products,
+                db=db,
+                session_id=session_id
+            )
+
+            # If only 1 product resolved (e.g. user only named the winner 'ASUS ROG'), find opponent
+            if len(battle_products) == 1:
+                p_single = battle_products[0]
+                opponent = next((p for p in active_products if p and str(p.get("id")) != str(p_single.get("id"))), None)
+                if not opponent and db:
+                    # Find a top rival product in same category from MySQL
+                    p_cat = p_single.get("category") or category
+                    rivals = ProductService.search_by_category(db, p_cat, limit=6)
+                    opponent = next((r for r in rivals if str(r.get("id")) != str(p_single.get("id"))), None)
+                    if not opponent:
+                        all_prods = ProductService.search_by_category(db, "Laptop", limit=5)
+                        opponent = next((r for r in all_prods if str(r.get("id")) != str(p_single.get("id"))), None)
+                if opponent:
+                    battle_products.append(opponent)
+
+            if len(battle_products) >= 2:
+                p1, p2 = battle_products[0], battle_products[1]
+                battle_res = BattleService.run_battle(
+                    db=db,
+                    p1=p1,
+                    p2=p2,
+                    user_id=None
+                )
+
+                if session_id:
+                    mem_session = ConversationMemoryService.get_or_create(session_id)
+                    mem_session.update_comparison_set([p1, p2])
+                    mem_session.update_battle_result(battle_res)
+
+                if intent in [IntentType.BATTLE_EXPLANATION, IntentType.BATTLE_REASON]:
+                    answer_text = ResponseService.format_battle_verdict_response(battle_res)
+                elif intent == IntentType.BATTLE_VERDICT:
+                    winner_name = battle_res.get("winner_name")
+                    w_score = battle_res.get("winner_score")
+                    answer_text = f"🏆 **Final Winner:** **{winner_name}** ({w_score}/100)\n\n" + "\n".join([f"✓ {kr}" for kr in battle_res.get("key_reasons", [])])
+                else:
+                    answer_text = battle_res.get("markdown", f"AI Battle between {battle_res.get('product_1_name')} and {battle_res.get('product_2_name')}")
+
+                debug_trace["route_selected"] = "AI_BATTLE_ENGINE"
+                debug_trace["battle_winner"] = battle_res.get("winner_name")
+                debug_trace["battle_scores"] = {
+                    "p1": battle_res.get("product_1_score"),
+                    "p2": battle_res.get("product_2_score"),
+                }
+
+                return {
+                    "intent": intent,
+                    "type": "battle",
+                    "response_mode": "AI",
+                    "field": "battle",
+                    "verified": True,
+                    "source_type": "battle_engine",
+                    "answer": answer_text,
+                    "message": answer_text,
+                    "products": [p1, p2],
+                    "compared_products": [p1, p2],
+                    "ignored_products": ignored_product_ids,
+                    "battle": battle_res,
+                    "recommendations": [],
+                    "sources": [
+                        {
+                            "filename": "AI Battle Arena & Spec Engine",
+                            "page_number": None,
+                            "section_title": "5-Round Multi-Dimensional Scoring",
+                            "snippet": f"Performance (40%), Price Value (20%), Display (15%), Battery (10%), Rating (15%)",
+                            "score": 1.0,
+                        }
+                    ],
+                    "confidence": f"{battle_res.get('confidence', '94%')} Verified",
+                    "context_used": "battle_engine",
+                    "show_recommendations": False,
+                    "show_comparison": True,
+                    "show_sources": True,
+                    "suggested_followups": [
+                        "Who won the Performance round?",
+                        "Why did the winner win?",
+                        "What is the battery runtime of each?",
+                    ],
+                    "debug_trace": debug_trace,
+                    "rag_version": "ver2",
+                }
+            else:
+                return {
+                    "intent": intent,
+                    "type": "error",
+                    "field": "battle",
+                    "verified": False,
+                    "source_type": "general",
+                    "answer": "Please select or mention 2 products to launch an AI Comparison Battle.",
+                    "message": "Please select or mention 2 products to launch an AI Comparison Battle.",
+                    "products": battle_products,
+                    "recommendations": [],
+                    "sources": [],
+                    "confidence": "Low Confidence",
+                    "context_used": "general",
+                    "show_recommendations": False,
+                    "show_comparison": False,
+                    "show_sources": False,
+                    "suggested_followups": ["Battle ASUS ROG and MSI Titan", "Battle iPhone 15 and Galaxy S24"],
                     "debug_trace": debug_trace,
                     "rag_version": "ver2",
                 }

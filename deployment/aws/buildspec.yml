@@ -1,0 +1,35 @@
+version: 0.2
+
+# AWS CodeBuild Specification for VersusAI Multi-Container Deployment
+phases:
+  pre_build:
+    commands:
+      - echo Logging in to Amazon ECR...
+      - aws --version
+      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+      - REPOSITORY_URI_BACKEND=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/versusai-backend
+      - REPOSITORY_URI_FRONTEND=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/versusai-frontend
+      - COMMIT_HASH=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
+      - IMAGE_TAG=${COMMIT_HASH:=latest}
+  build:
+    commands:
+      - echo Build started on `date`
+      - echo Building the Backend Docker image...
+      - docker build -t $REPOSITORY_URI_BACKEND:latest -t $REPOSITORY_URI_BACKEND:$IMAGE_TAG ./backend
+      - echo Building the Frontend Docker image...
+      - docker build -t $REPOSITORY_URI_FRONTEND:latest -t $REPOSITORY_URI_FRONTEND:$IMAGE_TAG --build-arg NEXT_PUBLIC_API_URL=/api ./frontend
+  post_build:
+    commands:
+      - echo Build completed on `date`
+      - echo Pushing the Docker images to Amazon ECR...
+      - docker push $REPOSITORY_URI_BACKEND:latest
+      - docker push $REPOSITORY_URI_BACKEND:$IMAGE_TAG
+      - docker push $REPOSITORY_URI_FRONTEND:latest
+      - docker push $REPOSITORY_URI_FRONTEND:$IMAGE_TAG
+      - echo Writing image definitions file for ECS/App Runner...
+      - printf '[{"name":"versusai-backend","imageUri":"%s"},{"name":"versusai-frontend","imageUri":"%s"}]' $REPOSITORY_URI_BACKEND:$IMAGE_TAG $REPOSITORY_URI_FRONTEND:$IMAGE_TAG > imagedefinitions.json
+artifacts:
+  files:
+    - imagedefinitions.json
+    - docker-compose.yml
+    - apprunner.yaml

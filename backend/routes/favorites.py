@@ -7,6 +7,7 @@ from models.favorite import Favorite
 from schemas.favorite import FavoriteCreateRequest, FavoriteListResponse
 from routes.products import format_product_response
 from utils.security import get_current_user
+from services.notification_service import NotificationService
 
 router = APIRouter(prefix="/favorites", tags=["Favorites"])
 
@@ -30,11 +31,11 @@ def add_favorite(
     db: Session = Depends(get_db)
 ):
     """Add a product to user favorites."""
-    pid = data.product_id
-    if str(pid).isdigit():
+    pid = data.product_id.strip()
+    if pid.isdigit():
         prod = db.query(Product).filter(Product.id == int(pid)).first()
     else:
-        prod = db.query(Product).filter(Product.product_code == str(pid)).first()
+        prod = db.query(Product).filter(Product.product_code == pid).first()
 
     if not prod:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found.")
@@ -52,6 +53,15 @@ def add_favorite(
     db.commit()
     db.refresh(fav)
 
+    NotificationService.create_notification(
+        db=db,
+        user_id=current_user.id,
+        title="Saved to Favorites",
+        message=f"'{prod.name}' was added to your favorites wishlist.",
+        type="PRODUCT",
+        reference_id=str(prod.id),
+    )
+
     return {"message": "Product added to favorites successfully.", "favorite_id": fav.id}
 
 @router.delete("/{product_id}")
@@ -61,10 +71,11 @@ def remove_favorite(
     db: Session = Depends(get_db)
 ):
     """Remove a product from user favorites."""
-    if str(product_id).isdigit():
-        prod = db.query(Product).filter(Product.id == int(product_id)).first()
+    pid = product_id.strip()
+    if pid.isdigit():
+        prod = db.query(Product).filter(Product.id == int(pid)).first()
     else:
-        prod = db.query(Product).filter(Product.product_code == str(product_id)).first()
+        prod = db.query(Product).filter(Product.product_code == pid).first()
 
     if not prod:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found.")
